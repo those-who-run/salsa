@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	"golang.org/x/crypto/salsa20"
+	"github.com/those-who-run/salsa/internal/keystream"
 )
 
 // Kind is the layout of a packet, known from its length before it is decrypted.
@@ -35,20 +35,14 @@ const (
 const Magic uint32 = 0x47375330
 
 // seedOffset is where the datagram, as received, carries the seed of its nonce.
-const seedOffset = 0x40
+const seedOffset = keystream.SeedOffset
 
-// The IV mask of each kind, from gt-telem 1.2.1's PDEncyption (_IV_MASK_A, _B and
-// _TILDE). The PS5 encrypts each kind with its own; a datagram decrypted with
-// another kind's mask fails the magic check.
+// The IV mask of each kind; internal/keystream says where they come from.
 const (
-	maskA     uint32 = 0xDEADBEAF
-	maskB     uint32 = 0xDEADBEEF
-	maskTilde uint32 = 0x55FABB4F
+	maskA     = keystream.MaskA
+	maskB     = keystream.MaskB
+	maskTilde = keystream.MaskTilde
 )
-
-// key is the first 32 bytes of "Simulator Interface Packet GT7 ver 0.0", gt-telem
-// 1.2.1's _GT7_KEY[:32]. GT Sport's key, which gt-telem also has, is out of scope.
-var key = [32]byte([]byte("Simulator Interface Packet GT7 ver 0.0")[:32])
 
 // Errors Decrypt returns, wrapped with the detail; compare them with errors.Is.
 var (
@@ -67,6 +61,8 @@ type Plain struct {
 	// 0x40 to 0x43 decrypt to the seed XORed with the keystream, as in gt-telem:
 	// the seed itself is the datagram's.
 	Bytes []byte
+	// Seed is the datagram's seed, the little-endian uint32 at 0x40 as received.
+	Seed uint32
 }
 
 // String names the kind as its heartbeat does: "A", "B" or "~".
@@ -98,16 +94,7 @@ func (k Kind) Len() int {
 }
 
 // mask returns the IV mask of the kind.
-func (k Kind) mask() uint32 {
-	switch k {
-	case KindB:
-		return maskB
-	case KindTilde:
-		return maskTilde
-	default:
-		return maskA
-	}
-}
+func (k Kind) mask() uint32 { return keystream.Mask(k.Len()) }
 
 // KindOf returns the kind of a datagram of length n, or an error wrapping ErrLength.
 func KindOf(n int) (Kind, error) {
@@ -135,18 +122,16 @@ func Decrypt(datagram []byte) (Plain, error) {
 		return Plain{}, err
 	}
 	out := make([]byte, len(datagram))
-	xor(out, datagram, binary.LittleEndian.Uint32(datagram[seedOffset:]), kind)
+	seed := binary.LittleEndian.Uint32(datagram[seedOffset:])
+	xor(out, datagram, seed, kind)
 	if got := binary.LittleEndian.Uint32(out); got != Magic {
 		return Plain{}, fmt.Errorf("%w: %s packet starts %#08x, want %#08x", ErrMagic, kind, got, Magic)
 	}
-	return Plain{Kind: kind, Bytes: out}, nil
+	return Plain{Kind: kind, Bytes: out, Seed: seed}, nil
 }
 
 // xor runs the keystream of kind and seed over in into out. The keystream is its own
 // inverse, so tests encrypt with it too.
 func xor(out, in []byte, seed uint32, kind Kind) {
-	var nonce [8]byte
-	binary.LittleEndian.PutUint32(nonce[0:], seed^kind.mask())
-	binary.LittleEndian.PutUint32(nonce[4:], seed)
-	salsa20.XORKeyStream(out, in, nonce[:], &key)
+	keystream.XOR(out, in, seed, kind.mask())
 }

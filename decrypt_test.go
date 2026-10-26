@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/those-who-run/salsa/internal/keystream"
 )
 
 var kinds = []Kind{KindA, KindB, KindTilde}
@@ -118,6 +120,9 @@ func TestDecryptRoundTrip(t *testing.T) {
 				}
 				if got.Kind != kind || !bytes.Equal(got.Bytes, want) {
 					t.Errorf("seed %#x: got %s %x, want %s %x", seed, got.Kind, got.Bytes, kind, want)
+				}
+				if got.Seed != seed {
+					t.Errorf("seed %#x: Plain.Seed = %#x", seed, got.Seed)
 				}
 				if binary.LittleEndian.Uint32(datagram[seedOffset:]) != seed {
 					t.Errorf("seed %#x: Decrypt changed the datagram", seed)
@@ -231,7 +236,7 @@ func TestHeartbeat(t *testing.T) {
 	if HeartbeatPort != 33739 || TelemetryPort != 33740 {
 		t.Errorf("ports %d and %d, want 33739 and 33740", HeartbeatPort, TelemetryPort)
 	}
-	if string(key[:]) != "Simulator Interface Packet GT7 v" {
+	if key := keystream.Key(); string(key[:]) != "Simulator Interface Packet GT7 v" {
 		t.Errorf("key %q", key)
 	}
 }

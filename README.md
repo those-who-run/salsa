@@ -19,20 +19,42 @@ if errors.Is(err, salsa.ErrLength) { /* not 296, 316 or 344 bytes */ }
 if errors.Is(err, salsa.ErrMagic) { /* didn't decrypt to GT7's magic */ }
 // plain.Kind is salsa.KindA, KindB or KindTilde, from the length;
 // plain.Bytes is the plaintext.
+
+p, err := salsa.Parse(plain)
+// p.Speed is in m/s, as GT7 sends it; p.SpeedKPH() converts.
+// p.Flags.TCS(), p.Flags.Paused(), ... read the flags word; p.Gears.Current().
+if p.B != nil { /* a B or "~" packet: p.B.Sway, p.B.Heave, p.B.Surge, ... */ }
+if p.Tilde != nil { /* a "~" packet: p.Tilde.EnergyRecovery, ... */ }
 ```
 
 `Decrypt` is Salsa20 with GT7's key; the nonce comes from the seed at `0x40` of
 the datagram and the IV mask of its kind, which its length gives. The heartbeat
 payloads (`HeartbeatA`, `HeartbeatB`, `HeartbeatTilde`) and the PS5's ports
 (`HeartbeatPort`, 33739/UDP, and `TelemetryPort`, 33740/UDP) are constants
-beside it. Parsing the plaintext into fields is still to come.
-[`docs/dependencies.md`](docs/dependencies.md) credits where the constants come from.
+beside it.
+
+`Parse` reads every field of the A layout, the ones v1 dropped included (the
+whole flags word, the alert RPM band, clutch, gear ratios, road plane), and the B
+and "~" blocks when the packet has them; `Packet.B` and `Packet.Tilde` are nil
+when it doesn't, so "not sent" is never read as zero. Values keep GT7's units.
+[`layout.go`](layout.go) is the offset table, one line per field naming its source.
+The "~" block's first four bytes and its vector, and flags bit 5, keep neutral
+names (`TildeByte1` to `TildeByte4`, `TildeVector`, `Bit5`) until a capture
+shows what they are. `Packet.Plain` is `Parse`'s inverse, and
+`salsatest.Encode` turns a `Packet` into the datagram the PS5 would send, for
+tests here and in `ecu`. `Plain.Seed` and `Packet.Seed` carry the datagram's
+seed; `Packet.IV` is the plaintext's bytes at `0x40`, the seed XOR the keystream,
+so a `Packet` through `Encode`, `Decrypt` and `Parse` comes back equal but for
+`IV`.
+
+[`docs/dependencies.md`](docs/dependencies.md) credits where the constants and
+the layout come from.
 
 ## Checks
 
 `make check` runs what CI runs; [`AGENTS.md`](AGENTS.md) says what that is and
-what a new clone runs first. CI also fuzzes `Decrypt` for 30 s in its `fuzz`
-job, which `make fuzz` runs on a laptop.
+what a new clone runs first. CI also fuzzes `Decrypt` and `Parse` for 30 s
+each in its `fuzz` job, which `make fuzz` runs on a laptop.
 
 ## Conventions
 
