@@ -1,11 +1,11 @@
-// Package salsa is the salsa library; README.md says what it is.
+// Package salsa decodes GT7's telemetry datagrams. Decrypt takes a datagram as the
+// PS5 sends it and returns its plaintext, the kind of packet (A, B or "~") read from
+// its length; parsing the plaintext into fields comes later
+// (those-who-run/paddock#31). The heartbeat facts the live listener needs, its
+// payloads and ports, are constants here too.
 //
-// It starts as the template renders it: one placeholder, Name, with its example,
-// so the module builds and every check in `make check` (the tests with the
-// coverage floor among them) has code to run on from the first commit. The
-// library's own API and its tests replace both.
+// The algorithm and its constants (the Salsa20 key, where the seed sits, the IV mask
+// of each packet kind) are those of gt-telem 1.2.1 (https://github.com/RaceCrewAI/gt-telem,
+// GPL-3.0, `gt_telem/net/crypto.py`), which credits Nenkai's PDTools
+// (https://github.com/Nenkai/PDTools); docs/dependencies.md says how they are used.
 package salsa
-
-// Name returns the module's name. It is the template's placeholder: replace it
-// with the library's own API.
-func Name() string { return "salsa" }

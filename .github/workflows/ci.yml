@@ -66,3 +66,20 @@ jobs:
     uses: those-who-run/.github/.github/workflows/go.yml@07c451475ad96881e9f1cb5c88c8b7d672ddd74b # v0.2.4
     with:
       coverage-floor: 90
+
+  # Decrypt's fuzz target for 30 s (`make fuzz`), on top of the seed corpus the tests
+  # run (those-who-run/paddock#30, AC4). Not a required check.
+  fuzz:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: "**/go.sum"
+      - name: make fuzz
+        run: make fuzz

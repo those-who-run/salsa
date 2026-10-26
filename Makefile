@@ -27,6 +27,7 @@ help:
 	@echo "lint      - golangci-lint, with .golangci.yml"
 	@echo "hooks     - install the commit hooks; a new clone or worktree runs it once"
 	@echo "fmt-check, tidy, vet, go-test, build, vuln - the Go checks one at a time"
+	@echo "fuzz      - fuzz Decrypt for FUZZTIME (30s), as CI's fuzz job does"
 	@echo "links     - every internal link and anchor in the Markdown resolves (offline)"
 	@echo "guard     - .claude/ holds those-who-run/.github's guard and settings at the pinned commit"
 
@@ -84,6 +85,13 @@ go-test:
 	  status=$$?; grep -v -E '^(=== |\s+--- PASS|--- PASS)' $(BUILD)/test.log; exit $$status
 	@if grep -E '^\s*--- SKIP' $(BUILD)/test.log; then echo "a skipped test fails: fix it or remove it" >&2; exit 1; fi
 	@$(PY) scripts/go_coverage.py $(BUILD)/cover.out $(COVERAGE_FLOOR)
+
+# Decrypt's fuzz target, beyond its seed corpus (which go-test runs): CI's `fuzz` job.
+# A failing input lands in testdata/fuzz/FuzzDecrypt/, to commit with its fix.
+FUZZTIME ?= 30s
+.PHONY: fuzz
+fuzz:
+	go test -run '^$$' -fuzz '^FuzzDecrypt$$' -fuzztime $(FUZZTIME) .
 
 .PHONY: build
 build:
