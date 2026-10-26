@@ -101,7 +101,7 @@ var gtTelem = map[string]func(p salsa.Packet) any{
 	"unused8":            func(p salsa.Packet) any { return p.Unused[7] },
 	"clutch_pedal":       func(p salsa.Packet) any { return p.ClutchPedal },
 	"clutch_engagement":  func(p salsa.Packet) any { return p.ClutchEngagement },
-	"trans_rpm":          func(p salsa.Packet) any { return p.ClutchRPM },
+	"trans_rpm":          func(p salsa.Packet) any { return p.RPMAfterClutch },
 	"trans_top_speed":    func(p salsa.Packet) any { return p.TransmissionTop },
 	"gear1":              func(p salsa.Packet) any { return p.GearRatios[0] },
 	"gear2":              func(p salsa.Packet) any { return p.GearRatios[1] },
@@ -159,6 +159,11 @@ func sameAsPython(t *testing.T, got any, want json.RawMessage) bool {
 
 // AC1: the golden A and B datagrams parse to what gt-telem 1.2.1 parsed from them,
 // field for field (testdata/golden/parse_golden.py).
+//
+// The golden plaintext is make_golden.py's pattern, (i*31 + length) & 0xFF, which
+// repeats every 256 bytes: fields 0x100 apart (Position and the first gear ratios,
+// say) hold the same bytes, so this test cannot tell such offsets apart.
+// TestParseOffsets is the one that pins absolute offsets.
 func TestParseGolden(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -305,60 +310,64 @@ func TestParseAbsent(t *testing.T) {
 	}
 }
 
-// R1: the offsets of the A block, one distinct value at each.
+// R1: the offsets of the A block. Every field holds its own offset as its value, so
+// no two fields share one and any field read from another's offset is caught. This
+// is the test that pins absolute offsets: the golden plaintext (TestParseGolden)
+// repeats every 256 bytes and cannot tell 0x04 from 0x104.
 func TestParseOffsets(t *testing.T) {
 	b := make([]byte, salsa.LenA)
 	binary.LittleEndian.PutUint32(b, salsa.Magic)
-	putFloats(b, 0x04, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15)
-	binary.LittleEndian.PutUint32(b[0x40:], 0xCAFEF00D)
-	putFloats(b, 0x44, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27)
 	le := binary.LittleEndian
-	le.PutUint32(b[0x70:], 70)
-	le.PutUint16(b[0x74:], 74)
-	le.PutUint16(b[0x76:], 76)
-	le.PutUint32(b[0x78:], 78)
-	le.PutUint32(b[0x7C:], 0x7C)
-	le.PutUint32(b[0x80:], 80)
-	for i, v := range []uint16{84, 86, 88, 0x8A, 0x8C, 0x8E} {
-		le.PutUint16(b[0x84+2*i:], v)
+	floatsAt := func(from, to int) {
+		for off := from; off < to; off += 4 {
+			putFloats(b, off, float32(off))
+		}
+	}
+	floatsAt(0x04, 0x40)
+	le.PutUint32(b[0x40:], 0x40)
+	floatsAt(0x44, 0x70)
+	for _, off := range []int{0x70, 0x78, 0x7C, 0x80} {
+		le.PutUint32(b[off:], uint32(off)) //nolint:gosec // small
+	}
+	for _, off := range []int{0x74, 0x76, 0x84, 0x86, 0x88, 0x8A, 0x8C, 0x8E} {
+		le.PutUint16(b[off:], uint16(off)) //nolint:gosec // small
 	}
 	copy(b[0x90:], []byte{0x90, 0x91, 0x92, 0x93})
-	putFloats(b, 0x94, 94, 95, 96, 97)
-	putFloats(b, 0xA4, 0xA4, 0xA5, 0xA6, 0xA7, 0xB4, 0xB5, 0xB6, 0xB7, 0xC4, 0xC5, 0xC6, 0xC7)
-	for i := range 8 {
-		le.PutUint32(b[0xD4+4*i:], uint32(0xD4+i)) //nolint:gosec // small
+	floatsAt(0x94, 0xD4)
+	for off := 0xD4; off < 0xF4; off += 4 {
+		le.PutUint32(b[off:], uint32(off)) //nolint:gosec // small
 	}
-	putFloats(b, 0xF4, 0xF4, 0xF8, 0xFC, 0x100, 1, 2, 3, 4, 5, 6, 7, 8)
+	floatsAt(0xF4, 0x124)
 	le.PutUint32(b[0x124:], 0x124)
 	p, err := salsa.Parse(salsa.Plain{Kind: salsa.KindA, Bytes: b})
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := salsa.A{
-		Position: salsa.Vec3{X: 1, Y: 2, Z: 3}, Velocity: salsa.Vec3{X: 4, Y: 5, Z: 6},
-		Rotation: salsa.Vec3{X: 7, Y: 8, Z: 9}, Orientation: 10,
-		AngularVelocity: salsa.Vec3{X: 11, Y: 12, Z: 13}, BodyHeight: 14, EngineRPM: 15,
-		IV: 0xCAFEF00D, FuelLevel: 17, FuelCapacity: 18, Speed: 19, Boost: 20,
-		OilPressure: 21, WaterTemp: 22, OilTemp: 23,
-		TyreTemp: salsa.Wheels{FL: 24, FR: 25, RL: 26, RR: 27},
-		PacketID: 70, CurrentLap: 74, TotalLaps: 76, BestLapMs: 78, LastLapMs: 0x7C,
-		TimeOfDayMs: 80, RacePosition: 84, TotalCars: 86, MinAlertRPM: 88,
+		Position: salsa.Vec3{X: 0x04, Y: 0x08, Z: 0x0C}, Velocity: salsa.Vec3{X: 0x10, Y: 0x14, Z: 0x18},
+		Rotation: salsa.Vec3{X: 0x1C, Y: 0x20, Z: 0x24}, Orientation: 0x28,
+		AngularVelocity: salsa.Vec3{X: 0x2C, Y: 0x30, Z: 0x34}, BodyHeight: 0x38, EngineRPM: 0x3C,
+		IV: 0x40, FuelLevel: 0x44, FuelCapacity: 0x48, Speed: 0x4C, Boost: 0x50,
+		OilPressure: 0x54, WaterTemp: 0x58, OilTemp: 0x5C,
+		TyreTemp: salsa.Wheels{FL: 0x60, FR: 0x64, RL: 0x68, RR: 0x6C},
+		PacketID: 0x70, CurrentLap: 0x74, TotalLaps: 0x76, BestLapMs: 0x78, LastLapMs: 0x7C,
+		TimeOfDayMs: 0x80, RacePosition: 0x84, TotalCars: 0x86, MinAlertRPM: 0x88,
 		MaxAlertRPM: 0x8A, CalcMaxSpeed: 0x8C, Flags: 0x8E, Gears: 0x90,
 		Throttle: 0x91, Brake: 0x92, Byte93: 0x93,
-		RoadPlane: salsa.Vec3{X: 94, Y: 95, Z: 96}, RoadPlaneDistance: 97,
-		WheelSpeed:       salsa.Wheels{FL: 0xA4, FR: 0xA5, RL: 0xA6, RR: 0xA7},
-		TyreRadius:       salsa.Wheels{FL: 0xB4, FR: 0xB5, RL: 0xB6, RR: 0xB7},
-		SuspensionHeight: salsa.Wheels{FL: 0xC4, FR: 0xC5, RL: 0xC6, RR: 0xC7},
-		Unused:           [8]int32{0xD4, 0xD5, 0xD6, 0xD7, 0xD8, 0xD9, 0xDA, 0xDB},
-		ClutchPedal:      0xF4, ClutchEngagement: 0xF8, ClutchRPM: 0xFC, TransmissionTop: 0x100,
-		GearRatios: [8]float32{1, 2, 3, 4, 5, 6, 7, 8},
+		RoadPlane: salsa.Vec3{X: 0x94, Y: 0x98, Z: 0x9C}, RoadPlaneDistance: 0xA0,
+		WheelSpeed:       salsa.Wheels{FL: 0xA4, FR: 0xA8, RL: 0xAC, RR: 0xB0},
+		TyreRadius:       salsa.Wheels{FL: 0xB4, FR: 0xB8, RL: 0xBC, RR: 0xC0},
+		SuspensionHeight: salsa.Wheels{FL: 0xC4, FR: 0xC8, RL: 0xCC, RR: 0xD0},
+		Unused:           [8]int32{0xD4, 0xD8, 0xDC, 0xE0, 0xE4, 0xE8, 0xEC, 0xF0},
+		ClutchPedal:      0xF4, ClutchEngagement: 0xF8, RPMAfterClutch: 0xFC, TransmissionTop: 0x100,
+		GearRatios: [8]float32{0x104, 0x108, 0x10C, 0x110, 0x114, 0x118, 0x11C, 0x120},
 		CarCode:    0x124,
 	}
 	if p.A != want {
 		t.Errorf("A =\n%+v\nwant\n%+v", p.A, want)
 	}
-	if got := p.SpeedKPH(); math.Abs(got-19*3.6) > 1e-9 {
-		t.Errorf("SpeedKPH() = %v, want %v", got, 19*3.6)
+	if got := p.SpeedKPH(); math.Abs(got-0x4C*3.6) > 1e-9 {
+		t.Errorf("SpeedKPH() = %v, want %v", got, 0x4C*3.6)
 	}
 }
 
@@ -397,8 +406,13 @@ func TestPlainInverse(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			plain.Seed = uint32(r.Uint64()) //nolint:gosec // any 32 bits will do
+			p, err = salsa.Parse(plain)
+			if err != nil || p.Seed != plain.Seed {
+				t.Fatalf("Parse: Seed %#x, want %#x (%v)", p.Seed, plain.Seed, err)
+			}
 			back := p.Plain()
-			if back.Kind != kind || !bytes.Equal(back.Bytes, plain.Bytes) {
+			if back.Kind != kind || !bytes.Equal(back.Bytes, plain.Bytes) || back.Seed != plain.Seed {
 				t.Fatalf("%s: Plain() differs from the plaintext parsed", kind)
 			}
 		}

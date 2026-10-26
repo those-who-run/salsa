@@ -9,8 +9,15 @@ import (
 // blocks when the packet is long enough to carry them. Values are as GT7 sends
 // them: speeds in m/s, temperatures in °C, lap times in ms. layout.go has the
 // offset of every field and where it comes from.
+//
+// IV is not the datagram's seed: it is the plaintext's bytes at 0x40, the seed XOR
+// the keystream. The seed is Seed. A Packet put through salsatest.Encode, Decrypt
+// and Parse comes back equal but for IV, which no encoder can choose freely.
 type Packet struct {
 	A
+	// Seed is the datagram's seed, the little-endian uint32 at 0x40 as received
+	// (Plain.Seed). It is not part of the plaintext; salsatest.Encode seeds with it.
+	Seed uint32
 	// B is the motion block, set for B and "~" packets and nil for A packets, so
 	// "not sent" is not mistaken for zero.
 	B *B
@@ -21,16 +28,20 @@ type Packet struct {
 // A is the block every packet starts with, 0x00 to 0x128, the whole of an A packet
 // bar its magic.
 type A struct {
-	Position        Vec3    // world position, m
-	Velocity        Vec3    // world velocity, m/s
-	Rotation        Vec3    // body rotation, three of the four quaternion components PDTools reads
-	Orientation     float32 // the fourth, which gt-telem calls orientation
+	Position Vec3 // world position, m
+	Velocity Vec3 // world velocity, m/s
+	// Rotation and Orientation are four floats the sources read two ways: PDTools as
+	// a quaternion (X, Y, Z, then W), MacManley as pitch, yaw and roll (each -1 to 1)
+	// then orientationRelativeToNorth (1 north, 0 south). gt-telem's names are kept
+	// and neither reading is assumed.
+	Rotation        Vec3
+	Orientation     float32
 	AngularVelocity Vec3    // rad/s
 	BodyHeight      float32 // m
 	EngineRPM       float32
 	// IV is the plaintext's 4 bytes at 0x40, which gt-telem reads as a float and
-	// PDTools skips. They are not the seed: the seed is the datagram's own bytes there,
-	// which decrypt to the seed XOR the keystream (Plain.Bytes).
+	// PDTools skips. It is the seed XOR the keystream, not the seed: the datagram
+	// carries the seed in clear there, and decrypting XORs it. Packet.Seed is the seed.
 	IV           uint32
 	FuelLevel    float32
 	FuelCapacity float32
@@ -47,9 +58,18 @@ type A struct {
 	BestLapMs   int32 // -1 when there is none
 	LastLapMs   int32 // -1 when there is none
 	TimeOfDayMs int32
-	// RacePosition is the car's place, which gt-telem calls race_start_pos and PDTools
-	// PreRaceStartPositionOrQualiPos; it changes during the race. -1 outside one.
+	// RacePosition is gt-telem's race_start_pos. The sources disagree on what it
+	// is: PDTools (PreRaceStartPositionOrQualiPos) and MacManley (RaceStartPosition)
+	// say the start position, -1 once the race starts. v1's recordings say the car's
+	// place, updated at each change during the race (v1's RaceState.position), and
+	// the fixture in testdata/v1 has 1 and 2 in its in-race frames. The name follows
+	// v1's evidence; -1 outside a race.
 	RacePosition int16
+	// TotalCars is gt-telem's total_cars, the number of cars. PDTools
+	// (NumCarsAtPreRace) and MacManley (preRaceNumCars) say -1 once the race starts;
+	// v1's recordings have it set in races, and -1 for the whole of a time trial and
+	// in the frames GT7 replays around the results screen (v1's sessionkind.py), so
+	// -1 says nothing about the field.
 	TotalCars    int16
 	MinAlertRPM  int16 // the shift lights' band
 	MaxAlertRPM  int16
@@ -68,8 +88,10 @@ type A struct {
 	Unused            [8]int32
 	ClutchPedal       float32
 	ClutchEngagement  float32
-	ClutchRPM         float32 // RPM after the clutch, into the gearbox
-	TransmissionTop   float32 // transmission top speed, as GT7 sends it
+	RPMAfterClutch    float32 // RPM from the clutch into the gearbox, 0 with the clutch down
+	// TransmissionTop is the transmission's top speed as a gear ratio value (PDTools
+	// and MacManley), not a speed: no unit to convert.
+	TransmissionTop float32
 	// GearRatios are gears 1 to 8. GT7 copies the car's ratios here without a bound,
 	// PDTools notes, so the eighth is usually 0 and a car with more gears
 	// overwrites CarCode.
@@ -80,7 +102,9 @@ type A struct {
 // B is the motion block of B and "~" packets, 0x128 to 0x13C.
 type B struct {
 	WheelRotation float32 // steering wheel rotation, rad
-	// FillerFB is a float PDTools calls FillerFloatFB; nobody names it yet.
+	// FillerFB is a float PDTools calls FillerFloatFB. MacManley calls it
+	// steeringAngularVelocity, the steering wheel's angular velocity in rad/s;
+	// unverified, so the name stays neutral.
 	FillerFB float32
 	Sway     float32 // lateral acceleration
 	Heave    float32 // vertical acceleration
@@ -129,7 +153,11 @@ const (
 	FlagTCS                           // bit 11
 )
 
-// CarsOnTrack reports bit 0: a race against other cars, not a time trial or practice.
+// CarsOnTrack reports bit 0, which PDTools describes as the car being on the track
+// or in the paddock with data available. v1's recordings (sessionkind.py) have it
+// set from the first driving frame in races, time trials and practice alike, and off
+// in GT7's race replays: it does not mean a race against other cars, whatever
+// gt-telem's name suggests.
 func (f Flags) CarsOnTrack() bool { return f&FlagCarsOnTrack != 0 }
 
 // Paused reports bit 1: the simulation is paused.
@@ -174,9 +202,10 @@ type Gears uint8
 // NoGear is the suggested gear when there is none.
 const NoGear = 15
 
-// MakeGears packs a current and a suggested gear (NoGear for none), 0 to 15 each.
+// MakeGears packs a current and a suggested gear (NoGear for none). Each has 4 bits:
+// a value above 15 keeps only its low 4 bits, as the byte would.
 func MakeGears(current, suggested uint8) Gears {
-	return Gears(suggested<<4 | current&0x0F)
+	return Gears((suggested&0x0F)<<4 | current&0x0F)
 }
 
 // Current returns the current gear, as GT7 sends it.
@@ -207,7 +236,8 @@ func (p Packet) SpeedKPH() float64 { return float64(p.Speed) * 3.6 }
 // Parse reads a plaintext from Decrypt into a Packet: the A block always, the B block
 // for B and "~" packets and the "~" block for "~" packets. A Plain whose length is
 // not its Kind's is an error wrapping ErrLength, and one without the magic ErrMagic.
-// Parse(plain) followed by Packet.Plain gives back plain's bytes exactly.
+// Parse(plain) followed by Packet.Plain gives back plain exactly. Packet.Seed is
+// plain.Seed.
 func Parse(plain Plain) (Packet, error) {
 	kind, err := KindOf(len(plain.Bytes))
 	if err != nil {
@@ -220,7 +250,7 @@ func Parse(plain Plain) (Packet, error) {
 		return Packet{}, fmt.Errorf("%w: plaintext starts %#08x, want %#08x", ErrMagic, got, Magic)
 	}
 	c := codec{b: plain.Bytes}
-	var p Packet
+	p := Packet{Seed: plain.Seed}
 	c.blockA(&p.A)
 	if kind != KindA {
 		p.B = new(B)
@@ -234,7 +264,8 @@ func Parse(plain Plain) (Packet, error) {
 }
 
 // Plain returns the plaintext of p, the inverse of Parse: the magic, then each block
-// p has, as long as its Kind's packet. A "~" packet with a nil B has zeros there.
+// p has, as long as its Kind's packet, with p.Seed. A "~" packet with a nil B has
+// zeros there. It only reads p, so goroutines may share a Packet.
 func (p Packet) Plain() Plain {
 	kind := p.Kind()
 	c := codec{b: make([]byte, kind.Len()), write: true}
@@ -250,5 +281,5 @@ func (p Packet) Plain() Plain {
 	if kind == KindTilde {
 		c.blockTilde(p.Tilde)
 	}
-	return Plain{Kind: kind, Bytes: c.b}
+	return Plain{Kind: kind, Bytes: c.b, Seed: p.Seed}
 }

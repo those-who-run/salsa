@@ -61,6 +61,8 @@ type Plain struct {
 	// 0x40 to 0x43 decrypt to the seed XORed with the keystream, as in gt-telem:
 	// the seed itself is the datagram's.
 	Bytes []byte
+	// Seed is the datagram's seed, the little-endian uint32 at 0x40 as received.
+	Seed uint32
 }
 
 // String names the kind as its heartbeat does: "A", "B" or "~".
@@ -92,16 +94,7 @@ func (k Kind) Len() int {
 }
 
 // mask returns the IV mask of the kind.
-func (k Kind) mask() uint32 {
-	switch k {
-	case KindB:
-		return maskB
-	case KindTilde:
-		return maskTilde
-	default:
-		return maskA
-	}
-}
+func (k Kind) mask() uint32 { return keystream.Mask(k.Len()) }
 
 // KindOf returns the kind of a datagram of length n, or an error wrapping ErrLength.
 func KindOf(n int) (Kind, error) {
@@ -129,11 +122,12 @@ func Decrypt(datagram []byte) (Plain, error) {
 		return Plain{}, err
 	}
 	out := make([]byte, len(datagram))
-	xor(out, datagram, binary.LittleEndian.Uint32(datagram[seedOffset:]), kind)
+	seed := binary.LittleEndian.Uint32(datagram[seedOffset:])
+	xor(out, datagram, seed, kind)
 	if got := binary.LittleEndian.Uint32(out); got != Magic {
 		return Plain{}, fmt.Errorf("%w: %s packet starts %#08x, want %#08x", ErrMagic, kind, got, Magic)
 	}
-	return Plain{Kind: kind, Bytes: out}, nil
+	return Plain{Kind: kind, Bytes: out, Seed: seed}, nil
 }
 
 // xor runs the keystream of kind and seed over in into out. The keystream is its own

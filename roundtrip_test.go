@@ -174,8 +174,8 @@ func packetOf(t *testing.T, f v1Frame) salsa.Packet {
 		}
 	}
 	p.Gears = salsa.MakeGears(current, suggested)
-	// Seeds as varied as the frames; Encode writes it at 0x40.
-	p.IV = uint32(p.PacketID) * 2654435761 //nolint:gosec // any seed will do
+	// Seeds as varied as the frames; Encode writes the seed at 0x40.
+	p.Seed = uint32(p.PacketID) * 2654435761 //nolint:gosec // any seed will do
 	return p
 }
 
@@ -288,6 +288,9 @@ func TestRoundTripV1(t *testing.T) {
 					t.Errorf("%s: came back as a %s packet", where, got.Kind())
 				}
 				checkFrame(t, where, f, got)
+				if got.Seed != built.Seed {
+					t.Errorf("%s: seed %#x, built with %#x", where, got.Seed, built.Seed)
+				}
 				// Nothing else changed on the way: the whole A block but the IV,
 				// which decrypts to the seed XOR the keystream.
 				built.IV, got.IV = 0, 0

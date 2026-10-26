@@ -10,24 +10,14 @@ import (
 )
 
 // Encode returns the datagram the PS5 would send for p: p.Plain(), encrypted with
-// GT7's keystream for p's kind and seeded with p.IV, which is written at 0x40 of the
-// datagram. salsa.Decrypt and salsa.Parse give back p, but for IV, which decrypts to
-// the seed XOR the keystream as it does for a real datagram.
+// GT7's keystream for p's kind and p.Seed, which is written in clear at 0x40 of the
+// datagram. salsa.Decrypt and salsa.Parse give back p, Seed included, but for IV:
+// it decrypts to the seed XOR the keystream, as it does for a real datagram, so
+// whatever p.IV held is lost. Compare with IV cleared on both sides.
 func Encode(p salsa.Packet) []byte {
 	plain := p.Plain()
 	datagram := make([]byte, len(plain.Bytes))
-	keystream.XOR(datagram, plain.Bytes, p.IV, mask(plain.Kind))
-	binary.LittleEndian.PutUint32(datagram[keystream.SeedOffset:], p.IV)
+	keystream.XOR(datagram, plain.Bytes, p.Seed, keystream.Mask(len(datagram)))
+	binary.LittleEndian.PutUint32(datagram[keystream.SeedOffset:], p.Seed)
 	return datagram
-}
-
-func mask(k salsa.Kind) uint32 {
-	switch k {
-	case salsa.KindB:
-		return keystream.MaskB
-	case salsa.KindTilde:
-		return keystream.MaskTilde
-	default:
-		return keystream.MaskA
-	}
 }

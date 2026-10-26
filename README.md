@@ -42,7 +42,10 @@ The "~" block's first four bytes and its vector, and flags bit 5, keep neutral
 names (`TildeByte1` to `TildeByte4`, `TildeVector`, `Bit5`) until a capture
 shows what they are. `Packet.Plain` is `Parse`'s inverse, and
 `salsatest.Encode` turns a `Packet` into the datagram the PS5 would send, for
-tests here and in `ecu`.
+tests here and in `ecu`. `Plain.Seed` and `Packet.Seed` carry the datagram's
+seed; `Packet.IV` is the plaintext's bytes at `0x40`, the seed XOR the keystream,
+so a `Packet` through `Encode`, `Decrypt` and `Parse` comes back equal but for
+`IV`.
 
 [`docs/dependencies.md`](docs/dependencies.md) credits where the constants and
 the layout come from.

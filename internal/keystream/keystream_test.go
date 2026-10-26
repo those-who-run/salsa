@@ -25,3 +25,17 @@ func TestXOR(t *testing.T) {
 		streams = append(streams, out)
 	}
 }
+
+// Mask picks by length, A for anything that isn't B or "~"; Key is a copy.
+func TestMaskAndKey(t *testing.T) {
+	for length, want := range map[int]uint32{0x128: MaskA, 0x13C: MaskB, 0x158: MaskTilde, 0: MaskA, 368: MaskA} {
+		if got := Mask(length); got != want {
+			t.Errorf("Mask(%d) = %#x, want %#x", length, got, want)
+		}
+	}
+	k := Key()
+	k[0] ^= 0xFF
+	if Key() == k || string(key[:4]) != "Simu" {
+		t.Error("changing Key's result changed the key")
+	}
+}

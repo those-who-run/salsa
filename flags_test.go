@@ -81,4 +81,8 @@ func TestGears(t *testing.T) {
 	if got := salsa.MakeGears(3, salsa.NoGear); got != 0xF3 {
 		t.Errorf("MakeGears(3, NoGear) = %#02x", uint8(got))
 	}
+	// Above 15 each keeps its low 4 bits, and neither spills into the other.
+	if got := salsa.MakeGears(0x13, 0x24); got != 0x43 {
+		t.Errorf("MakeGears(0x13, 0x24) = %#02x, want 0x43", uint8(got))
+	}
 }

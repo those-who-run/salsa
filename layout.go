@@ -20,8 +20,10 @@ import (
 //   - MacManley gt7-udp, src/GT7UDPParser.h (https://github.com/MacManley/gt7-udp),
 //     whose PacketTilda extends PacketB.
 
-// codec reads b into fields, or writes fields into b when write is set. Its b is at
-// least as long as the block it is given; Parse and Plain see to that.
+// codec reads b into fields, or writes fields into b when write is set. Writing only
+// reads the fields, never stores to them, so Packet.Plain can run on a Packet other
+// goroutines share. Its b is at least as long as the block it is given; Parse and
+// Plain see to that.
 type codec struct {
 	b     []byte
 	write bool
@@ -31,8 +33,8 @@ type codec struct {
 func (c codec) blockA(a *A) {
 	c.vec3(0x04, &a.Position)           // position_x, _y, _z; PDTools Position
 	c.vec3(0x10, &a.Velocity)           // velocity_x, _y, _z; Velocity
-	c.vec3(0x1C, &a.Rotation)           // rotation_x, _y, _z; Rotation (a quaternion's X, Y, Z)
-	c.f32(0x28, &a.Orientation)         // orientation; Rotation's W
+	c.vec3(0x1C, &a.Rotation)           // rotation_x, _y, _z; Rotation (a quaternion's X, Y, Z); MacManley: pitch, yaw, roll
+	c.f32(0x28, &a.Orientation)         // orientation; Rotation's W; MacManley: orientationRelativeToNorth
 	c.vec3(0x2C, &a.AngularVelocity)    // ang_vel_x, _y, _z; AngularVelocity
 	c.f32(0x38, &a.BodyHeight)          // body_height; BodyHeight
 	c.f32(0x3C, &a.EngineRPM)           // engine_rpm; EngineRPM
@@ -51,8 +53,8 @@ func (c codec) blockA(a *A) {
 	c.i32(0x78, &a.BestLapMs)           // best_lap_time_ms; BestLapTime
 	c.i32(0x7C, &a.LastLapMs)           // last_lap_time_ms; LastLapTime
 	c.i32(0x80, &a.TimeOfDayMs)         // time_of_day_ms; TimeOfDayProgression
-	c.i16(0x84, &a.RacePosition)        // race_start_pos; PreRaceStartPositionOrQualiPos
-	c.i16(0x86, &a.TotalCars)           // total_cars; NumCarsAtPreRace
+	c.i16(0x84, &a.RacePosition)        // race_start_pos; PreRaceStartPositionOrQualiPos; RaceStartPosition (packet.go: meaning disputed)
+	c.i16(0x86, &a.TotalCars)           // total_cars; NumCarsAtPreRace; preRaceNumCars (packet.go: meaning disputed)
 	c.i16(0x88, &a.MinAlertRPM)         // min_alert_rpm; MinAlertRPM
 	c.i16(0x8A, &a.MaxAlertRPM)         // max_alert_rpm; MaxAlertRPM
 	c.i16(0x8C, &a.CalcMaxSpeed)        // calc_max_speed; CalculatedMaxSpeed
@@ -71,8 +73,8 @@ func (c codec) blockA(a *A) {
 	}
 	c.f32(0xF4, &a.ClutchPedal)      // clutch_pedal; ClutchPedal
 	c.f32(0xF8, &a.ClutchEngagement) // clutch_engagement; ClutchEngagement
-	c.f32(0xFC, &a.ClutchRPM)        // trans_rpm; RPMFromClutchToGearbox
-	c.f32(0x100, &a.TransmissionTop) // trans_top_speed; TransmissionTopSpeed
+	c.f32(0xFC, &a.RPMAfterClutch)   // trans_rpm; RPMFromClutchToGearbox
+	c.f32(0x100, &a.TransmissionTop) // trans_top_speed; TransmissionTopSpeed, "top speed (as a gear ratio value)"
 	for i := range a.GearRatios {
 		c.f32(0x104+4*i, &a.GearRatios[i]) // gear1 .. gear8; GearRatios[0..6], then empty_or_gearRatio8
 	}
@@ -82,7 +84,7 @@ func (c codec) blockA(a *A) {
 // blockB is the B block, 0x128 to 0x13C.
 func (c codec) blockB(b *B) {
 	c.f32(0x128, &b.WheelRotation) // PDTools WheelRotation; gt-telem wheel_rotation_radians
-	c.f32(0x12C, &b.FillerFB)      // FillerFloatFB; filler_float_fb
+	c.f32(0x12C, &b.FillerFB)      // FillerFloatFB; filler_float_fb; MacManley: steeringAngularVelocity (rad/s), unverified
 	c.f32(0x130, &b.Sway)          // Sway; sway
 	c.f32(0x134, &b.Heave)         // Heave; heave
 	c.f32(0x138, &b.Surge)         // Surge; surge, the last field: B ends at LenB, 0x13C
@@ -119,9 +121,11 @@ func (c codec) u16(off int, v *uint16) {
 }
 
 func (c codec) i16(off int, v *int16) {
-	u := uint16(*v) //nolint:gosec // the int16's bits as they are on the wire
-	c.u16(off, &u)
-	*v = int16(u) //nolint:gosec // the wire's bits back into an int16
+	if c.write {
+		binary.LittleEndian.PutUint16(c.b[off:], uint16(*v)) //nolint:gosec // the int16's bits as they are on the wire
+	} else {
+		*v = int16(binary.LittleEndian.Uint16(c.b[off:])) //nolint:gosec // the wire's bits back into an int16
+	}
 }
 
 func (c codec) u32(off int, v *uint32) {
@@ -133,17 +137,21 @@ func (c codec) u32(off int, v *uint32) {
 }
 
 func (c codec) i32(off int, v *int32) {
-	u := uint32(*v) //nolint:gosec // the int32's bits as they are on the wire
-	c.u32(off, &u)
-	*v = int32(u) //nolint:gosec // the wire's bits back into an int32
+	if c.write {
+		binary.LittleEndian.PutUint32(c.b[off:], uint32(*v)) //nolint:gosec // the int32's bits as they are on the wire
+	} else {
+		*v = int32(binary.LittleEndian.Uint32(c.b[off:])) //nolint:gosec // the wire's bits back into an int32
+	}
 }
 
 // f32 keeps a float's bits as they are, NaN payloads included, so Plain gives back
 // the bytes Parse read.
 func (c codec) f32(off int, v *float32) {
-	u := math.Float32bits(*v)
-	c.u32(off, &u)
-	*v = math.Float32frombits(u)
+	if c.write {
+		binary.LittleEndian.PutUint32(c.b[off:], math.Float32bits(*v))
+	} else {
+		*v = math.Float32frombits(binary.LittleEndian.Uint32(c.b[off:]))
+	}
 }
 
 func (c codec) vec3(off int, v *Vec3) {
