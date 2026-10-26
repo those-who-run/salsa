@@ -41,6 +41,13 @@ and the ports 33739 and 33740. They are facts about the game's protocol, re-type
 as Go constants; no gt-telem code is copied. gt-telem is GPL-3.0 and salsa is
 GPL-3.0-only, so the licences are compatible too.
 
+The packet layout in `layout.go`, the offset and type of every field, is
+likewise re-typed from gt-telem 1.2.1's `TurismoClient._parse_telemetry`, PDTools'
+`SimulatorPacket.Read` and `SimulatorFlags` (MIT), and, for the "~" block,
+MacManley's gt7-udp (https://github.com/MacManley/gt7-udp, MIT,
+`src/GT7UDPParser.h`). Facts about the packet, not code.
+
 gt-telem 1.2.1 and pycryptodome also made the golden datagrams in
-`testdata/golden/` once, by hand (`make_golden.py` says how); neither is a
-dependency of the module or of CI.
+`testdata/golden/` once, by hand (`make_golden.py` says how), and gt-telem parsed
+them into the `*.gt-telem.json` files `parse_test.go` compares with
+(`parse_golden.py`); neither is a dependency of the module or of CI.

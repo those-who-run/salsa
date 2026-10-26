@@ -67,8 +67,9 @@ jobs:
     with:
       coverage-floor: 90
 
-  # Decrypt's fuzz target for 30 s (`make fuzz`), on top of the seed corpus the tests
-  # run (those-who-run/paddock#30, AC4). Not a required check.
+  # The fuzz targets, Decrypt's then Parse's, for 30 s each (`make fuzz`), on top of
+  # the seed corpus the tests run (those-who-run/paddock#30, AC4, and #31, AC6). Not
+  # a required check.
   fuzz:
     runs-on: ubuntu-latest
     permissions:
