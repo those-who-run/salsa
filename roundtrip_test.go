@@ -194,11 +194,17 @@ var v1Other = map[string]bool{
 	"current_gear": true, "suggested_gear": true, "track_id": true, "v": true,
 }
 
+// roundedFixture is the one recording that rounded what it recorded: v1's oldest,
+// whose floats are not all float32s (82.7 °C) and whose km/h were rounded to two
+// places. Every other fixture holds float32s widened to float64, exactly.
+const roundedFixture = "real-race-2laps-2026-10-14.jsonl.gz"
+
 // checkFrame compares a packet with the frame v1 recorded, key by key, the way v1
-// would have recorded the packet. A float v1 recorded comes back as the nearest
-// float32, which is the value itself in every recording but the oldest, which
-// rounded some. A key it doesn't know fails the test, so nothing is skipped unseen.
-func checkFrame(t *testing.T, where string, f v1Frame, p salsa.Packet) {
+// would have recorded the packet: exactly, float for float and speed included
+// (float32(float64(x)*3.6/3.6) is x for every float32 x). For a rounded recording, a
+// float comes back as the nearest float32 and speed within 2^-22 of the km/h. A key
+// it doesn't know fails the test, so nothing is skipped unseen.
+func checkFrame(t *testing.T, where string, f v1Frame, p salsa.Packet, rounded bool) {
 	t.Helper()
 	for key := range f {
 		if v1Floats[key] == nil && v1Ints[key] == nil && v1Wheels[key] == nil && !v1Other[key] {
@@ -216,7 +222,7 @@ func checkFrame(t *testing.T, where string, f v1Frame, p salsa.Packet) {
 		t.Errorf("%s: flags %#x set that v1 never kept", where, uint16(other))
 	}
 	kph := f.float(t, "speed_kph")
-	if got := p.SpeedKPH(); math.Abs(got-kph) > math.Max(kph, 1)*0x1p-22 {
+	if got := p.SpeedKPH(); got != kph && (!rounded || math.Abs(got-kph) > math.Max(kph, 1)*0x1p-22) {
 		t.Errorf("%s: speed %v km/h, want %v", where, got, kph)
 	}
 	s, _ := p.Gears.Suggested()
@@ -230,15 +236,26 @@ func checkFrame(t *testing.T, where string, f v1Frame, p salsa.Packet) {
 	}
 	for key, field := range v1Wheels {
 		w, want := field(p), f.wheels(t, key)
-		if got := [4]float32{w.FL, w.FR, w.RL, w.RR}; got != [4]float32{float32(want[0]), float32(want[1]), float32(want[2]), float32(want[3])} {
-			t.Errorf("%s: %s = %v, the frame has %v", where, key, got, want)
+		for i, got := range []float32{w.FL, w.FR, w.RL, w.RR} {
+			if !sameFloat(got, want[i], rounded) {
+				t.Errorf("%s: %s = %v, the frame has %v", where, key, w, want)
+			}
 		}
 	}
 	for key, field := range v1Floats {
-		if got, want := *field(&p), f.float(t, key); got != float32(want) {
+		if got, want := *field(&p), f.float(t, key); !sameFloat(got, want, rounded) {
 			t.Errorf("%s: %s = %v, the frame has %v", where, key, got, want)
 		}
 	}
+}
+
+// sameFloat reports whether got is what v1 recorded: exactly, or for a rounded
+// recording the nearest float32.
+func sameFloat(got float32, recorded float64, rounded bool) bool {
+	if rounded {
+		return got == float32(recorded)
+	}
+	return float64(got) == recorded
 }
 
 // #31's AC2 and #32's AC5: for every frame of every v1 fixture, the packet
@@ -246,6 +263,7 @@ func checkFrame(t *testing.T, where string, f v1Frame, p salsa.Packet) {
 // parsed, it gives back every field the frame has.
 func TestRoundTripV1(t *testing.T) {
 	for _, path := range v1Fixtures(t) {
+		rounded := filepath.Base(path) == roundedFixture
 		t.Run(filepath.Base(path), func(t *testing.T) {
 			frames := readV1Frames(t, path)
 			read := readRecording(t, path)
@@ -257,7 +275,7 @@ func TestRoundTripV1(t *testing.T) {
 				if r.T != frames[i].float(t, "t") {
 					t.Errorf("%s: T = %v, the frame has %s", where, r.T, frames[i]["t"])
 				}
-				checkFrame(t, where, frames[i], r.Packet)
+				checkFrame(t, where, frames[i], r.Packet, rounded)
 				built := r.Packet
 				// Seeds as varied as the frames; Encode writes the seed at 0x40.
 				built.Seed = uint32(built.PacketID) * 2654435761 //nolint:gosec // any seed will do
@@ -275,7 +293,7 @@ func TestRoundTripV1(t *testing.T) {
 				if got.FromV1Recording() {
 					t.Errorf("%s: a parsed datagram says it came from a v1 recording", where)
 				}
-				checkFrame(t, where, frames[i], got)
+				checkFrame(t, where, frames[i], got, rounded)
 				if got.Seed != built.Seed {
 					t.Errorf("%s: seed %#x, built with %#x", where, got.Seed, built.Seed)
 				}

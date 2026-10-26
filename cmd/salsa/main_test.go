@@ -106,7 +106,7 @@ func TestCatWriteError(t *testing.T) {
 	if code := run(context.Background(), []string{"cat", fixture}, nil, failingWriter{}, &stderr); code != 1 {
 		t.Errorf("exit %d", code)
 	}
-	if !strings.Contains(stderr.String(), "closed") {
+	if !strings.Contains(stderr.String(), `"msg":"cannot write the packets"`) || !strings.Contains(stderr.String(), "closed") {
 		t.Errorf("stderr %q", &stderr)
 	}
 }

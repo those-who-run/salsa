@@ -19,9 +19,17 @@ type Received struct {
 // not care where they come from.
 //
 // Next returns the next packet, io.EOF once there are no more, or the error that
-// stopped the source, which every later call returns again. A cancelled ctx makes
-// Next return ctx.Err() without reading. Close releases what the source holds;
-// Next after Close is an error. A Source is not safe for concurrent use.
+// stopped the source, which every later call returns again. When ctx is done before
+// Next starts, it returns ctx.Err() without reading. Close releases what the source
+// holds; Next after Close is an error. A Source is not safe for concurrent use.
+//
+// What ctx does to a Next already waiting depends on the source. A live source
+// returns promptly once ctx is done, even while waiting for a packet. A recording
+// does not watch ctx while it reads: a file never keeps it waiting long, but a
+// recording read from a pipe or standard input (NewRecording) blocks in Next until
+// the writer sends more or closes the pipe, whatever ctx says, and since a Source
+// is not safe for concurrent use, Close from another goroutine is no way out
+// either. Closing the pipe's other end is.
 type Source interface {
 	Next(ctx context.Context) (Received, error)
 	io.Closer

@@ -181,6 +181,11 @@ func TestRecordingVersions(t *testing.T) {
 			t.Errorf("v %v: error %q names no file and line", v, err)
 		}
 	}
+	// A null version says so, rather than naming a version the line doesn't have.
+	_, err = readString("vnull.jsonl", marshal(t, edited(v2, map[string]any{"v": null}))+"\n")
+	if err == nil || err.Error() != "vnull.jsonl:1: v: null, not a format version" {
+		t.Errorf("v null: %v", err)
+	}
 	// A later version fails on its version, whatever keys it has.
 	_, err = readString("v3.jsonl", marshal(t, edited(v2, map[string]any{"v": 3, "new_field": 1}))+"\n")
 	if err == nil || !strings.Contains(err.Error(), "format version 3") {
@@ -264,6 +269,9 @@ func TestRecordingMalformed(t *testing.T) {
 		"a gear past 15":         marshal(t, edited(v2, map[string]any{"current_gear": 16})),
 		"a negative throttle":    marshal(t, edited(v2, map[string]any{"throttle": -1})),
 		"three wheels":           marshal(t, edited(v2, map[string]any{"tire_temp": []float64{1, 2, 3}})),
+		"five wheels":            marshal(t, edited(v2, map[string]any{"tire_temp": []float64{1, 2, 3, 4, 5}})),
+		"a null wheel":           marshal(t, edited(v2, map[string]any{"tire_temp": []any{91.5, null, 90.5, 82.7}})),
+		"wheels not an array":    marshal(t, edited(v2, map[string]any{"suspension_height": 0.2})),
 		"wheels not numbers":     marshal(t, edited(v2, map[string]any{"wheel_rps": []string{"a", "b", "c", "d"}})),
 		"a wheel past float32":   marshal(t, edited(v2, map[string]any{"tire_radius": []float64{1e39, 0, 0, 0}})),
 		"a float past float32":   marshal(t, edited(v2, map[string]any{"oil_temp": 1e39})),
@@ -394,7 +402,14 @@ func TestRecordingShapes(t *testing.T) {
 		"a long line":      {long + "\n" + good + "\n", 2},
 		"empty":            {"", 0},
 		"empty gzip":       {string(gzipped(t, "")), 0},
-		"one byte":         {"\n", -1},
+		// Zero bytes after a member are padding, as Python's gzip reads them: at the
+		// end, as a power loss can leave a file, and between members.
+		"zero padding":          {string(gzipped(t, good+"\n")) + strings.Repeat("\x00", 4096), 1},
+		"padding then a member": {string(gzipped(t, good+"\n")) + "\x00\x00" + string(gzipped(t, good+"\n")), 2},
+		"padding then junk":     {string(gzipped(t, good+"\n")) + "\x00\x00junk", -1},
+		"junk after a member":   {string(gzipped(t, good+"\n")) + "junk", -1},
+		"half a member after":   {string(gzipped(t, good+"\n")) + string(gzipped(t, good+"\n")[:5]), -1},
+		"one byte":              {"\n", -1},
 	} {
 		t.Run(name, func(t *testing.T) {
 			got, err := readString(name, tc.data)

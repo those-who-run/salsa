@@ -59,6 +59,7 @@ for {
 	if errors.Is(err, io.EOF) { break }
 	var bad *salsa.RecordingError
 	if errors.As(err, &bad) { /* bad.Name, bad.Line: the file and the line */ }
+	if err != nil { return err } // any error is final: Next returns it again
 	// r.T is the frame's time in seconds, on the recording's own clock;
 	// r.Packet is the packet the frame was made from; r.FromV1Recording() is true.
 }
@@ -79,7 +80,10 @@ reads as v1 read it: the counters win.
 Every line is a frame. A line that isn't, blank or not JSON or with a key v1
 never wrote, a missing key, a value out of its field's range or a format
 version other than 1 or 2, is a `*RecordingError` naming the file and the line,
-and so is a gzip stream that is truncated or damaged; nothing is skipped.
+and so is a gzip stream that is truncated or damaged; nothing is skipped. Zero
+bytes after a gzip member are padding, skipped as Python's `gzip` skips them.
+`Next` checks `ctx` before it reads; a recording on a pipe that blocks keeps
+`Next` waiting until the writer sends more or closes it (`Source`'s doc).
 
 `salsa cat FILE` (in `cmd/salsa`; `-` reads standard input) prints a
 recording's packets as JSON lines, for debugging:

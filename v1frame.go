@@ -43,7 +43,9 @@ func f32Key(field func(p *Packet) *float32) func(*v1Fields, json.RawMessage) err
 
 func wheelsKey(field func(p *Packet) *Wheels) func(*v1Fields, json.RawMessage) error {
 	return func(f *v1Fields, raw json.RawMessage) error {
-		var w []float64
+		// Raw values, not float64s: encoding/json reads a null element as 0, where
+		// v1's from_dict fails on float(None).
+		var w []json.RawMessage
 		if err := json.Unmarshal(raw, &w); err != nil {
 			return err
 		}
@@ -52,11 +54,12 @@ func wheelsKey(field func(p *Packet) *Wheels) func(*v1Fields, json.RawMessage) e
 		}
 		out := field(&f.r.Packet)
 		for i, dst := range []*float32{&out.FL, &out.FR, &out.RL, &out.RR} {
-			v, err := narrow(w[i])
-			if err != nil {
-				return err
+			if isNull(w[i]) {
+				return fmt.Errorf("wheel %d: null", i+1)
 			}
-			*dst = v
+			if err := readF32(w[i], dst); err != nil {
+				return fmt.Errorf("wheel %d: %w", i+1, err)
+			}
 		}
 		return nil
 	}
@@ -123,8 +126,10 @@ var v1Keys = []v1Key{
 	{"tire_temp", true, wheelsKey(func(p *Packet) *Wheels { return &p.TyreTemp })},
 	{"water_temp", true, f32Key(func(p *Packet) *float32 { return &p.WaterTemp })},
 	{"oil_temp", true, f32Key(func(p *Packet) *float32 { return &p.OilTemp })},
-	// v1 kept a track id it worked out itself (null in most frames), not a field of
-	// the packet: it is read past. Track detection is Prost's.
+	// v1 kept a track id it worked out itself (null in most frames, an integer in
+	// some), not a field of the packet. Any value is read past, as v1's from_dict
+	// took any without checking its type; the key must be there, as v1 required.
+	// Track detection is Prost's.
 	{"track_id", true, func(*v1Fields, json.RawMessage) error { return nil }},
 	{"race_start_pos", true, i16Key(func(p *Packet) *int16 { return &p.RacePosition })},
 	{"total_cars", true, i16Key(func(p *Packet) *int16 { return &p.TotalCars })},
@@ -183,6 +188,9 @@ func parseV1Frame(line []byte) (Received, error) {
 	if raw, ok := keys["v"]; ok {
 		// v1's from_dict reads a frame without "v" as version 1, and some
 		// version-1 recordings say "v":1.
+		if isNull(raw) {
+			return Received{}, errors.New("v: null, not a format version")
+		}
 		v, err := readInt(raw, math.MinInt64, math.MaxInt64)
 		if err != nil {
 			return Received{}, fmt.Errorf("v: %w", err)
@@ -201,7 +209,7 @@ func parseV1Frame(line []byte) (Received, error) {
 			}
 			continue
 		}
-		if k.name != "track_id" && string(raw) == "null" {
+		if k.name != "track_id" && isNull(raw) {
 			return Received{}, fmt.Errorf("%s: null", k.name)
 		}
 		if err := k.read(&f, raw); err != nil {
@@ -220,6 +228,10 @@ func parseV1Frame(line []byte) (Received, error) {
 	f.r.Gears = MakeGears(f.current, f.suggested)
 	return f.r, nil
 }
+
+// isNull reports whether a raw value is JSON's null, which encoding/json would
+// otherwise read into a number as 0 without an error.
+func isNull(raw json.RawMessage) bool { return string(raw) == "null" }
 
 // readF32 reads a JSON number into a float32 field. v1 recorded float32 values
 // widened to float64, so they come back exactly; the oldest recordings rounded some

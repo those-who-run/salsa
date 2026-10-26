@@ -64,11 +64,12 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		if errors.Is(err, io.EOF) {
 			return 0
 		}
-		if err == nil {
-			err = out.Encode(line{T: r.T, Kind: r.Kind().String(), FromV1Recording: r.FromV1Recording(), Packet: r.Packet})
-		}
 		if err != nil {
 			log.ErrorContext(ctx, "cannot read the recording", "err", err.Error())
+			return 1
+		}
+		if err := out.Encode(line{T: r.T, Kind: r.Kind().String(), FromV1Recording: r.FromV1Recording(), Packet: r.Packet}); err != nil {
+			log.ErrorContext(ctx, "cannot write the packets", "err", err.Error())
 			return 1
 		}
 	}

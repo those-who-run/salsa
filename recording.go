@@ -41,7 +41,8 @@ var gzipMagic = []byte{0x1f, 0x8b}
 // file's first bytes, whatever its name), one RaceState per line as v1's
 // RecordingWriter writes them, and returns its frames as packets: FromV1Recording
 // says what they hold. A gzip file v1 appended to holds one gzip member per
-// append, and they are read as one stream.
+// append, and they are read as one stream; zero bytes after a member are padding,
+// skipped as Python's gzip module skips them.
 //
 // Every line is a frame: a line that is not one, blank lines included, is a
 // *RecordingError naming the file and the line, and nothing is skipped. So is a
@@ -89,8 +90,47 @@ func newRecording(r io.Reader, name string) (*recording, error) {
 	if err != nil {
 		return nil, &RecordingError{Name: name, Err: fmt.Errorf("damaged gzip header: %w", err)}
 	}
-	src.lines = bufio.NewReader(src.gz)
+	src.gz.Multistream(false)
+	src.lines = bufio.NewReader(&members{gz: src.gz, in: in})
 	return src, nil
+}
+
+// members reads a gzip file member after member, as Python's gzip module does: zero
+// bytes after a member are padding and skipped (a file zero-filled at its end, as a
+// power loss can leave one, reads to its last member), and anything else after a
+// member must be another member.
+type members struct {
+	gz *gzip.Reader
+	in *bufio.Reader
+}
+
+func (m *members) Read(p []byte) (int, error) {
+	for {
+		n, err := m.gz.Read(p)
+		if !errors.Is(err, io.EOF) {
+			return n, err
+		}
+		if n > 0 {
+			return n, nil
+		}
+		for {
+			b, err := m.in.ReadByte()
+			if errors.Is(err, io.EOF) {
+				return 0, io.EOF
+			}
+			if err != nil {
+				return 0, err
+			}
+			if b != 0 {
+				_ = m.in.UnreadByte() // a byte just read can always be unread
+				break
+			}
+		}
+		if err := m.gz.Reset(m.in); err != nil {
+			return 0, fmt.Errorf("after a gzip member: %w", err)
+		}
+		m.gz.Multistream(false)
+	}
 }
 
 // recording is the Source OpenRecording and NewRecording return.
