@@ -371,6 +371,22 @@ func TestRecordingDamaged(t *testing.T) {
 			t.Errorf("err %v", err)
 		}
 	})
+	t.Run("a read error in padding", func(t *testing.T) {
+		disk := errors.New("disk")
+		r := io.MultiReader(bytes.NewReader(gzipped(t, good+"\n")), strings.NewReader("\x00\x00\x00"), iotest.ErrReader(disk))
+		src, err := salsa.NewRecording(r, "pad.jsonl.gz")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := src.Next(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		_, err = src.Next(context.Background())
+		var re *salsa.RecordingError
+		if !errors.Is(err, disk) || !errors.As(err, &re) || re.Line != 2 {
+			t.Errorf("a read error after a member and padding: %v, want the disk error at line 2", err)
+		}
+	})
 	t.Run("a read error first", func(t *testing.T) {
 		if _, err := salsa.NewRecording(iotest.ErrReader(errors.New("disk")), "disk.jsonl"); err == nil {
 			t.Error("no error")
@@ -404,12 +420,13 @@ func TestRecordingShapes(t *testing.T) {
 		"empty gzip":       {string(gzipped(t, "")), 0},
 		// Zero bytes after a member are padding, as Python's gzip reads them: at the
 		// end, as a power loss can leave a file, and between members.
-		"zero padding":          {string(gzipped(t, good+"\n")) + strings.Repeat("\x00", 4096), 1},
-		"padding then a member": {string(gzipped(t, good+"\n")) + "\x00\x00" + string(gzipped(t, good+"\n")), 2},
-		"padding then junk":     {string(gzipped(t, good+"\n")) + "\x00\x00junk", -1},
-		"junk after a member":   {string(gzipped(t, good+"\n")) + "junk", -1},
-		"half a member after":   {string(gzipped(t, good+"\n")) + string(gzipped(t, good+"\n")[:5]), -1},
-		"one byte":              {"\n", -1},
+		"zero padding":                  {string(gzipped(t, good+"\n")) + strings.Repeat("\x00", 4096), 1},
+		"padding then a member":         {string(gzipped(t, good+"\n")) + "\x00\x00" + string(gzipped(t, good+"\n")), 2},
+		"padding then junk":             {string(gzipped(t, good+"\n")) + "\x00\x00junk", -1},
+		"junk after a member":           {string(gzipped(t, good+"\n")) + "junk", -1},
+		"half a member after":           {string(gzipped(t, good+"\n")) + string(gzipped(t, good+"\n")[:5]), -1},
+		"padding after a second member": {string(gzipped(t, good+"\n")) + string(gzipped(t, good+"\n")) + "\x00\x00\x00\x00", 2},
+		"one byte":                      {"\n", -1},
 	} {
 		t.Run(name, func(t *testing.T) {
 			got, err := readString(name, tc.data)
