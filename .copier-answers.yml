@@ -1,0 +1,14 @@
+# Written by copier from those-who-run/chassis: what `copier update` needs to bring
+# the template's later changes in. Change it only through copier.
+_commit: v1.0.1
+_src_path: https://github.com/those-who-run/chassis.git
+description: 'The GT7 telemetry decoder for Those Who Run v2: it decrypts the game''s
+
+    datagrams with Salsa20, parses them into typed packets, and reads v1''s
+
+    recordings as the same packets. `ecu` imports it.
+
+    It ships as a Go module, not a service: a release is its git tag.'
+image: false
+name: salsa
+title: Salsa
