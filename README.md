@@ -11,10 +11,28 @@ names its paddock issue: `Closes those-who-run/paddock#N.` when it meets every
 acceptance criterion, `Part of those-who-run/paddock#N` otherwise
 ([`AGENTS.md`](AGENTS.md)).
 
+## Use
+
+```go
+plain, err := salsa.Decrypt(datagram) // a datagram as received on salsa.TelemetryPort
+if errors.Is(err, salsa.ErrLength) { /* not 296, 316 or 344 bytes */ }
+if errors.Is(err, salsa.ErrMagic) { /* didn't decrypt to GT7's magic */ }
+// plain.Kind is salsa.KindA, KindB or KindTilde, from the length;
+// plain.Bytes is the plaintext.
+```
+
+`Decrypt` is Salsa20 with GT7's key; the nonce comes from the seed at `0x40` of
+the datagram and the IV mask of its kind, which its length gives. The heartbeat
+payloads (`HeartbeatA`, `HeartbeatB`, `HeartbeatTilde`) and the PS5's ports
+(`HeartbeatPort`, 33739/UDP, and `TelemetryPort`, 33740/UDP) are constants
+beside it. Parsing the plaintext into fields is still to come.
+[`docs/dependencies.md`](docs/dependencies.md) credits where the constants come from.
+
 ## Checks
 
 `make check` runs what CI runs; [`AGENTS.md`](AGENTS.md) says what that is and
-what a new clone runs first.
+what a new clone runs first. CI also fuzzes `Decrypt` for 30 s in its `fuzz`
+job, which `make fuzz` runs on a laptop.
 
 ## Conventions
 
@@ -37,10 +55,6 @@ This repository was made from `chassis` with `copier copy`, and
 `.copier-answers.yml` records the release it came from and the answers given.
 Renovate proposes each new `chassis` release as a PR that runs
 `copier update`; chassis's README has the rest.
-
-The module started with the template's placeholder package, `Name` in `doc.go`
-and its example in `doc_test.go`, so that every check had code to run on; the
-library's own API and tests replace them.
 
 ## Releases
 
