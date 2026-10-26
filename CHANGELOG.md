@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.1](https://github.com/those-who-run/salsa/compare/v0.1.0...v0.1.1) (2026-10-26)
+
+
+### Features
+
+* parse the A, B and "~" packet layouts into a typed Packet ([#8](https://github.com/those-who-run/salsa/issues/8)) ([542f6de](https://github.com/those-who-run/salsa/commit/542f6de475158faffd7aade631748b432d057a57))
+
 ## 0.1.0 (2026-10-26)
 
 
