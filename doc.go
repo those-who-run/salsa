@@ -4,6 +4,10 @@
 // blocks when the packet has them. The heartbeat facts the live listener needs, its
 // payloads and ports, are constants here too.
 //
+// OpenRecording reads v1's outing recordings (RaceState JSON lines, plain or gzip) as
+// the same Packets, each with its receive time, behind Source, the one interface for
+// packets from a recording now and from the live listener later.
+//
 // The algorithm and its constants (the Salsa20 key, where the seed sits, the IV mask
 // of each packet kind) are those of gt-telem 1.2.1 (https://github.com/RaceCrewAI/gt-telem,
 // GPL-3.0, `gt_telem/net/crypto.py`), which credits Nenkai's PDTools

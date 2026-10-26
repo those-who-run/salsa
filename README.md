@@ -45,7 +45,51 @@ shows what they are. `Packet.Plain` is `Parse`'s inverse, and
 tests here and in `ecu`. `Plain.Seed` and `Packet.Seed` carry the datagram's
 seed; `Packet.IV` is the plaintext's bytes at `0x40`, the seed XOR the keystream,
 so a `Packet` through `Encode`, `Decrypt` and `Parse` comes back equal but for
-`IV`.
+`IV`. The other way is exact: a datagram decrypted, parsed and encoded again is
+the same bytes.
+
+### v1 recordings
+
+```go
+src, err := salsa.OpenRecording("outing.jsonl.gz") // or salsa.NewRecording(os.Stdin, "-")
+if err != nil { /* can't open it, or a damaged gzip header */ }
+defer src.Close()
+for {
+	r, err := src.Next(ctx)
+	if errors.Is(err, io.EOF) { break }
+	var bad *salsa.RecordingError
+	if errors.As(err, &bad) { /* bad.Name, bad.Line: the file and the line */ }
+	if err != nil { return err } // any error is final: Next returns it again
+	// r.T is the frame's time in seconds, on the recording's own clock;
+	// r.Packet is the packet the frame was made from; r.FromV1Recording() is true.
+}
+```
+
+`OpenRecording` reads v1's outing recordings and fixtures, one `RaceState` per
+line as v1's `RecordingWriter` wrote them, plain or gzip (told from the first
+bytes), format versions 1 and 2, and gives each frame back as the A packet v1
+built it from, behind `Source`: `Next(ctx)` until `io.EOF`, then `Close`. The live
+listener will be a `Source` too. The mapping inverts v1's
+`RaceState.from_telemetry`: km/h back to m/s, the paused and loading phases back
+to flags bits 1 and 2 and `cars_on_track` to bit 0, the two gears back into
+their byte, the rest as recorded. What v1 never kept (the rest of the flags word,
+the alert RPM band, clutch, gear ratios, road plane, the seed) is zero, and
+`Packet.FromV1Recording` says so. A phase that disagrees with the lap counters
+reads as v1 read it: the counters win.
+
+Every line is a frame. A line that isn't, blank or not JSON or with a key v1
+never wrote, a missing key, a value out of its field's range or a format
+version other than 1 or 2, is a `*RecordingError` naming the file and the line,
+and so is a gzip stream that is truncated or damaged; nothing is skipped. Zero
+bytes after a gzip member are padding, skipped as Python's `gzip` skips them.
+`Next` checks `ctx` before it reads; a recording on a pipe that blocks keeps
+`Next` waiting until the writer sends more or closes it (`Source`'s doc).
+
+`salsa cat FILE` (in `cmd/salsa`; `-` reads standard input) prints a
+recording's packets as JSON lines, for debugging:
+`go run ./cmd/salsa cat testdata/v1/real-race-2laps-2026-10-14.jsonl.gz | head`.
+[`testdata/v1/`](testdata/v1/README.md) holds the v1 recordings the tests of
+`salsa` and `ecu` share, each listed with its provenance in `FIXTURES.yaml`.
 
 [`docs/dependencies.md`](docs/dependencies.md) credits where the constants and
 the layout come from.
@@ -53,15 +97,17 @@ the layout come from.
 ## Checks
 
 `make check` runs what CI runs; [`AGENTS.md`](AGENTS.md) says what that is and
-what a new clone runs first. CI also fuzzes `Decrypt` and `Parse` for 30 s
-each in its `fuzz` job, which `make fuzz` runs on a laptop.
+what a new clone runs first. CI also fuzzes `Decrypt`, `Parse` and the
+recording reader for 30 s each in its `fuzz` job, which `make fuzz` runs on a laptop.
 
 ## Conventions
 
 The ones every Go component shares, from the
 [`chassis`](https://github.com/those-who-run/chassis) template.
-This repository is a library, with no command or service yet; they apply to any
-it adds under `cmd/`:
+This repository is a library, with one command, `cmd/salsa`, a debugging tool
+that reads a file and exits. They apply to commands under `cmd/`; `salsa` reads
+no configuration, logs to standard error because standard output carries the
+packets, and serves no `/healthz`, having nothing to serve:
 
 - **Configuration from the environment**, read once at start-up into a typed
   struct; an unset variable takes its default and a value that can't be read

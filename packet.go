@@ -12,7 +12,12 @@ import (
 //
 // IV is not the datagram's seed: it is the plaintext's bytes at 0x40, the seed XOR
 // the keystream. The seed is Seed. A Packet put through salsatest.Encode, Decrypt
-// and Parse comes back equal but for IV, which no encoder can choose freely.
+// and Parse comes back equal but for IV, which no encoder can choose freely. The
+// other way round is exact: for a datagram d, salsatest.Encode of Parse of
+// Decrypt(d) is d again, byte for byte, so a packet can stand in for its datagram.
+//
+// A Packet read from a v1 recording (OpenRecording) holds only what v1 kept, and
+// FromV1Recording says so.
 type Packet struct {
 	A
 	// Seed is the datagram's seed, the little-endian uint32 at 0x40 as received
@@ -23,7 +28,25 @@ type Packet struct {
 	B *B
 	// Tilde is the "~" block, set for "~" packets only.
 	Tilde *Tilde
+
+	fromV1 bool // read from a v1 recording, not parsed from a datagram
 }
+
+// FromV1Recording reports whether p was read from a v1 recording (OpenRecording)
+// rather than parsed from a datagram. Such a packet is an A packet with the fields
+// v1 kept, mapped back as v1's RaceState.from_telemetry took them: speed from km/h
+// to m/s, flags bit 1 from the paused phase, bit 2 from the loading phase and bit 0
+// from cars_on_track, the gears byte from the current and suggested gears, and
+// laps, lap times, fuel, temperatures, the wheels, position, velocity, rotation,
+// orientation, angular velocity, throttle, brake, boost, oil pressure, body height,
+// race position, total cars, car code and time of day as they are. Everything v1
+// never kept is zero, not GT7's value: the rest of the flags word, the alert RPM
+// band, clutch, gear ratios, road plane, the IV and the seed among them. A version-1
+// frame, without the full-frame fields, has those zero too, as v1 read it.
+//
+// The mark is not part of the packet's bytes: Plain and salsatest.Encode drop it,
+// and a packet parsed from a datagram never has it.
+func (p Packet) FromV1Recording() bool { return p.fromV1 }
 
 // A is the block every packet starts with, 0x00 to 0x128, the whole of an A packet
 // bar its magic.
@@ -88,7 +111,10 @@ type A struct {
 	Unused            [8]int32
 	ClutchPedal       float32
 	ClutchEngagement  float32
-	RPMAfterClutch    float32 // RPM from the clutch into the gearbox, 0 with the clutch down
+	// RPMAfterClutch is the RPM from the clutch into the gearbox (gt-telem's
+	// trans_rpm, PDTools' RPMFromClutchToGearbox). That it is 0 with the clutch
+	// down comes from MacManley's gt7-udp alone ("is 0 when clutch is depressed").
+	RPMAfterClutch float32
 	// TransmissionTop is the transmission's top speed as a gear ratio value (PDTools
 	// and MacManley), not a speed: no unit to convert.
 	TransmissionTop float32
