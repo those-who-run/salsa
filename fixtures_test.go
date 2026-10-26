@@ -1,0 +1,252 @@
+package salsa_test
+
+import (
+	"bytes"
+	"compress/gzip"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"regexp"
+	"slices"
+	"strconv"
+	"strings"
+	"testing"
+)
+
+// fixtureEntry is one entry of testdata/v1/FIXTURES.yaml.
+type fixtureEntry map[string]string
+
+// fixtureKeys are the keys every entry has, and no others.
+var fixtureKeys = []string{"entry", "file", "frames", "sha256", "v1"}
+
+// v1EntryLink is a link to an entry of v1's fixture index at v1.0.0, by its lines.
+var v1EntryLink = regexp.MustCompile(`^https://github\.com/those-who-run/those-who-run/blob/v1\.0\.0/tests/fixtures/FIXTURES\.yaml#L\d+-L\d+$`)
+
+// readFixtureIndex reads FIXTURES.yaml: the subset of YAML it says it is, a list of
+// `key: value` entries under `fixtures:`. Anything else is an error, so the index
+// can't drift into YAML this reader would misread.
+func readFixtureIndex(b []byte) ([]fixtureEntry, error) {
+	var entries []fixtureEntry
+	inList := false
+	for n, line := range strings.Split(strings.TrimSuffix(string(b), "\n"), "\n") {
+		where := fmt.Sprintf("FIXTURES.yaml:%d", n+1)
+		switch trimmed := strings.TrimSpace(line); {
+		case trimmed == "" || strings.HasPrefix(trimmed, "#"):
+			continue
+		case line == "fixtures:" && !inList:
+			inList = true
+			continue
+		case !inList:
+			return nil, fmt.Errorf("%s: %q before `fixtures:`", where, line)
+		}
+		var item string
+		switch {
+		case strings.HasPrefix(line, "  - "):
+			entries = append(entries, fixtureEntry{})
+			item = strings.TrimPrefix(line, "  - ")
+		case strings.HasPrefix(line, "    ") && len(entries) > 0:
+			item = strings.TrimPrefix(line, "    ")
+		default:
+			return nil, fmt.Errorf("%s: %q is not an entry's line", where, line)
+		}
+		key, value, ok := strings.Cut(item, ": ")
+		if !ok || strings.ContainsAny(key, " :") || value == "" {
+			return nil, fmt.Errorf("%s: %q is not `key: value`", where, line)
+		}
+		entry := entries[len(entries)-1]
+		if _, dup := entry[key]; dup {
+			return nil, fmt.Errorf("%s: %s twice in one entry", where, key)
+		}
+		entry[key] = value
+	}
+	return entries, nil
+}
+
+// checkFixtures returns every way the files in dir and dir/FIXTURES.yaml disagree.
+func checkFixtures(dir string) []error {
+	b, err := os.ReadFile(filepath.Join(dir, "FIXTURES.yaml")) //nolint:gosec // a directory under testdata
+	if err != nil {
+		return []error{err}
+	}
+	entries, err := readFixtureIndex(b)
+	if err != nil {
+		return []error{err}
+	}
+	files, err := filepath.Glob(filepath.Join(dir, "*.jsonl.gz"))
+	if err != nil {
+		return []error{err}
+	}
+	var errs []error
+	listed := map[string]bool{}
+	for _, e := range entries {
+		var keys []string
+		for k := range e {
+			keys = append(keys, k)
+		}
+		slices.Sort(keys)
+		if !slices.Equal(keys, fixtureKeys) {
+			errs = append(errs, fmt.Errorf("%s: keys %v, want %v", e["file"], keys, fixtureKeys))
+			continue
+		}
+		name := e["file"]
+		if listed[name] {
+			errs = append(errs, fmt.Errorf("%s: listed twice", name))
+		}
+		listed[name] = true
+		if e["v1"] != "tests/fixtures/"+name {
+			errs = append(errs, fmt.Errorf("%s: v1 path %s, want the same name under tests/fixtures/", name, e["v1"]))
+		}
+		if !v1EntryLink.MatchString(e["entry"]) {
+			errs = append(errs, fmt.Errorf("%s: entry %s is not a link to v1's FIXTURES.yaml at v1.0.0", name, e["entry"]))
+		}
+		data, err := os.ReadFile(filepath.Join(dir, name)) //nolint:gosec // a file the index names, under testdata
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s: listed, but %w", name, err))
+			continue
+		}
+		if sum := sha256.Sum256(data); hex.EncodeToString(sum[:]) != e["sha256"] {
+			errs = append(errs, fmt.Errorf("%s: sha256 %x, FIXTURES.yaml says %s", name, sum, e["sha256"]))
+		}
+		lines, err := countLines(data)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", name, err))
+		} else if strconv.Itoa(lines) != e["frames"] {
+			errs = append(errs, fmt.Errorf("%s: %d lines, FIXTURES.yaml says %s frames", name, lines, e["frames"]))
+		}
+	}
+	for _, path := range files {
+		if !listed[filepath.Base(path)] {
+			errs = append(errs, fmt.Errorf("%s: not in FIXTURES.yaml", path))
+		}
+	}
+	return errs
+}
+
+// countLines counts the lines of a gzipped file.
+func countLines(gz []byte) (int, error) {
+	zr, err := gzip.NewReader(bytes.NewReader(gz))
+	if err != nil {
+		return 0, err
+	}
+	b, err := io.ReadAll(zr)
+	if err != nil {
+		return 0, err
+	}
+	return bytes.Count(b, []byte("\n")), nil
+}
+
+// R6: the fixtures are the files copied from v1 (testdata/v1/README.md), unchanged,
+// each listed in FIXTURES.yaml with its provenance, and the issue's seven among them.
+func TestV1FixtureSums(t *testing.T) {
+	for _, err := range checkFixtures(filepath.Join("testdata", "v1")) {
+		t.Error(err)
+	}
+	for _, name := range []string{
+		"real-race-2laps-2026-10-14", "real-quali-restart-quit-2026-10-14",
+		"real-nuc-suzuka-no-stop-2026-10-15", "real-nuc-suzuka-pit-stop-2026-10-15",
+		"real-nuc-sugo-restarts-2026-10-18", "real-nuc-sugo-two-stops-2026-10-18",
+		"real-nuc-willow-springs-pit-stop-2026-10-17",
+	} {
+		if _, err := os.Stat(filepath.Join("testdata", "v1", name+".jsonl.gz")); err != nil {
+			t.Error(err)
+		}
+	}
+}
+
+// copyFixtures copies testdata/v1 into a new directory, for a test to break.
+func copyFixtures(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	paths, err := filepath.Glob(filepath.Join("testdata", "v1", "*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range paths {
+		if err := os.WriteFile(filepath.Join(dir, filepath.Base(path)), readFile(t, path), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir
+}
+
+// AC4: changing one byte of a copied fixture fails the provenance check, and so do
+// a file with no entry, an entry with no file and an index that is not the format.
+func TestV1FixtureSumsFail(t *testing.T) {
+	t.Run("a byte changed", func(t *testing.T) {
+		dir := copyFixtures(t)
+		path := filepath.Join(dir, "real-nuc-suzuka-pit-stop-2026-10-15.jsonl.gz")
+		b := readFile(t, path)
+		b[len(b)/2] ^= 0x01
+		if err := os.WriteFile(path, b, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		errs := checkFixtures(dir)
+		if len(errs) == 0 || !strings.Contains(fmt.Sprint(errs), "sha256") {
+			t.Errorf("one byte changed: %v, want a sha256 mismatch", errs)
+		}
+	})
+	t.Run("a file not listed", func(t *testing.T) {
+		dir := copyFixtures(t)
+		if err := os.WriteFile(filepath.Join(dir, "extra.jsonl.gz"), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if errs := checkFixtures(dir); len(errs) != 1 || !strings.Contains(errs[0].Error(), "not in FIXTURES.yaml") {
+			t.Errorf("an unlisted file: %v", errs)
+		}
+	})
+	t.Run("an entry with no file", func(t *testing.T) {
+		dir := copyFixtures(t)
+		if err := os.Remove(filepath.Join(dir, "real-race-2laps-2026-10-14.jsonl.gz")); err != nil {
+			t.Fatal(err)
+		}
+		if errs := checkFixtures(dir); len(errs) != 1 || !strings.Contains(errs[0].Error(), "listed, but") {
+			t.Errorf("a missing file: %v", errs)
+		}
+	})
+	for name, edit := range map[string]func(string) string{
+		"frames": func(s string) string { return strings.Replace(s, "frames: 333", "frames: 334", 1) },
+		"v1 path": func(s string) string {
+			return strings.Replace(s, "v1: tests/fixtures/real-race", "v1: tests/real-race", 1)
+		},
+		"entry link":       func(s string) string { return strings.Replace(s, "blob/v1.0.0/", "blob/main/", 1) },
+		"a missing key":    func(s string) string { return strings.Replace(s, "    frames: 333\n", "", 1) },
+		"listed twice":     func(s string) string { return s + "\n" + s[strings.Index(s, "  - file:"):] },
+		"a key twice":      func(s string) string { return strings.Replace(s, "frames: 333", "frames: 333\n    frames: 333", 1) },
+		"not key: value":   func(s string) string { return strings.Replace(s, "frames: 333", "frames 333", 1) },
+		"no fixtures:":     func(s string) string { return strings.Replace(s, "fixtures:\n", "", 1) },
+		"bad indent":       func(s string) string { return strings.Replace(s, "    frames: 333", "      frames: 333", 1) },
+		"an orphaned line": func(s string) string { return strings.Replace(s, "fixtures:\n", "fixtures:\n    file: x\n", 1) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := copyFixtures(t)
+			path := filepath.Join(dir, "FIXTURES.yaml")
+			edited := edit(string(readFile(t, path)))
+			if err := os.WriteFile(path, []byte(edited), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if errs := checkFixtures(dir); len(errs) == 0 {
+				t.Errorf("%s: no error", name)
+			}
+		})
+	}
+	t.Run("no index", func(t *testing.T) {
+		if errs := checkFixtures(t.TempDir()); len(errs) != 1 {
+			t.Errorf("no FIXTURES.yaml: %v", errs)
+		}
+	})
+	t.Run("not gzip", func(t *testing.T) {
+		if _, err := countLines([]byte("plain")); err == nil {
+			t.Error("countLines read a file that is not gzip")
+		}
+		var buf bytes.Buffer
+		zw := gzip.NewWriter(&buf)
+		_, _ = zw.Write([]byte("a\nb\n"))
+		_ = zw.Close()
+		if _, err := countLines(buf.Bytes()[:buf.Len()-4]); err == nil {
+			t.Error("countLines read a truncated gzip file")
+		}
+	})
+}

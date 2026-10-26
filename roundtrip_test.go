@@ -2,15 +2,16 @@ package salsa_test
 
 import (
 	"bufio"
+	"bytes"
 	"compress/gzip"
-	"crypto/sha256"
-	"encoding/hex"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/those-who-run/salsa"
@@ -30,153 +31,112 @@ func v1Fixtures(t *testing.T) []string {
 	return paths
 }
 
-// v1Frame is one line of a v1 recording, a RaceState as v1's to_dict writes it.
+// v1Frame is one line of a v1 recording, a RaceState as v1's to_dict writes it,
+// read with no help from salsa: the oracle the reader is checked against.
 type v1Frame map[string]json.RawMessage
 
+// readV1Frames reads a gzipped v1 recording line by line, as JSON.
+func readV1Frames(t *testing.T, path string) []v1Frame {
+	t.Helper()
+	zr, err := gzip.NewReader(bytes.NewReader(readFile(t, path)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var frames []v1Frame
+	lines := bufio.NewScanner(zr)
+	lines.Buffer(nil, 1<<20)
+	for lines.Scan() {
+		var f v1Frame
+		if err := json.Unmarshal(lines.Bytes(), &f); err != nil {
+			t.Fatalf("%s: line %d: %v", path, len(frames)+1, err)
+		}
+		frames = append(frames, f)
+	}
+	if err := lines.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return frames
+}
+
+// readSource reads a Source to its end.
+func readSource(t *testing.T, src salsa.Source) []salsa.Received {
+	t.Helper()
+	var got []salsa.Received
+	for {
+		r, err := src.Next(context.Background())
+		if errors.Is(err, io.EOF) {
+			return got
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, r)
+	}
+}
+
+// readRecording opens a recording and reads it to its end.
+func readRecording(t *testing.T, path string) []salsa.Received {
+	t.Helper()
+	src, err := salsa.OpenRecording(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := src.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
+	return readSource(t, src)
+}
+
+func (f v1Frame) has(key string) bool {
+	_, ok := f[key]
+	return ok
+}
+
+// float returns a number of the frame, 0 when the frame lacks it (v1's default).
 func (f v1Frame) float(t *testing.T, key string) float64 {
 	t.Helper()
 	var v float64
-	if err := json.Unmarshal(f[key], &v); err != nil {
-		t.Fatalf("%s: %v", key, err)
+	if f.has(key) {
+		if err := json.Unmarshal(f[key], &v); err != nil {
+			t.Fatalf("%s: %v", key, err)
+		}
 	}
 	return v
 }
 
+// int returns an integer of the frame, 0 when the frame lacks it (v1's default).
 func (f v1Frame) int(t *testing.T, key string) int64 {
 	t.Helper()
 	var v int64
-	if err := json.Unmarshal(f[key], &v); err != nil {
-		t.Fatalf("%s: %v", key, err)
+	if f.has(key) {
+		if err := json.Unmarshal(f[key], &v); err != nil {
+			t.Fatalf("%s: %v", key, err)
+		}
 	}
 	return v
 }
 
+// wheels returns four floats of the frame, zeros when the frame lacks them.
 func (f v1Frame) wheels(t *testing.T, key string) [4]float64 {
 	t.Helper()
 	var v [4]float64
-	if err := json.Unmarshal(f[key], &v); err != nil {
-		t.Fatalf("%s: %v", key, err)
+	if f.has(key) {
+		if err := json.Unmarshal(f[key], &v); err != nil {
+			t.Fatalf("%s: %v", key, err)
+		}
 	}
 	return v
 }
 
-// f32 narrows a value v1 recorded from a float32 field, which it holds exactly.
-func f32(t *testing.T, key string, v float64) float32 {
+func (f v1Frame) phase(t *testing.T) string {
 	t.Helper()
-	if float64(float32(v)) != v {
-		t.Fatalf("%s = %v is not a float32", key, v)
+	var phase string
+	if err := json.Unmarshal(f["phase"], &phase); err != nil {
+		t.Fatal(err)
 	}
-	return float32(v)
-}
-
-func i16(t *testing.T, key string, v int64) int16 {
-	t.Helper()
-	if v < math.MinInt16 || v > math.MaxInt16 {
-		t.Fatalf("%s = %d is not an int16", key, v)
-	}
-	return int16(v) //nolint:gosec // in range, checked above
-}
-
-func i32(t *testing.T, key string, v int64) int32 {
-	t.Helper()
-	if v < math.MinInt32 || v > math.MaxInt32 {
-		t.Fatalf("%s = %d is not an int32", key, v)
-	}
-	return int32(v) //nolint:gosec // in range, checked above
-}
-
-func u8(t *testing.T, key string, v int64) uint8 {
-	t.Helper()
-	if v < 0 || v > math.MaxUint8 {
-		t.Fatalf("%s = %d is not a byte", key, v)
-	}
-	return uint8(v) //nolint:gosec // in range, checked above
-}
-
-func toWheels(t *testing.T, key string, w [4]float64) salsa.Wheels {
-	return salsa.Wheels{FL: f32(t, key, w[0]), FR: f32(t, key, w[1]), RL: f32(t, key, w[2]), RR: f32(t, key, w[3])}
-}
-
-// The keys of a v1 frame that are not packet fields: the receive time, the track
-// (v1 records it as null) and the format version.
-var notPacket = map[string]bool{"t": true, "track_id": true, "v": true}
-
-// packetOf builds the A packet a frame was parsed from, inverting v1's
-// RaceState.from_telemetry: speed back to m/s, phase and cars_on_track back into
-// flags bits 0 to 2, the gears back into their byte. Every other key is a field as
-// it is. A key it doesn't know fails the test, so nothing is skipped unseen.
-func packetOf(t *testing.T, f v1Frame) salsa.Packet {
-	t.Helper()
-	var p salsa.Packet
-	var current, suggested uint8
-	for key := range f {
-		switch key {
-		case "packet_id":
-			p.PacketID = i32(t, key, f.int(t, key))
-		case "phase":
-			var phase string
-			if err := json.Unmarshal(f[key], &phase); err != nil {
-				t.Fatal(err)
-			}
-			switch phase {
-			case "paused":
-				p.Flags |= salsa.FlagPaused
-			case "loading":
-				p.Flags |= salsa.FlagLoading
-			}
-		case "cars_on_track":
-			if string(f[key]) == "true" {
-				p.Flags |= salsa.FlagCarsOnTrack
-			}
-		case "current_lap":
-			p.CurrentLap = i16(t, key, f.int(t, key))
-		case "total_laps":
-			p.TotalLaps = i16(t, key, f.int(t, key))
-		case "best_lap_ms":
-			p.BestLapMs = i32(t, key, f.int(t, key))
-		case "last_lap_ms":
-			p.LastLapMs = i32(t, key, f.int(t, key))
-		case "time_of_day_ms":
-			p.TimeOfDayMs = i32(t, key, f.int(t, key))
-		case "race_start_pos":
-			p.RacePosition = i16(t, key, f.int(t, key))
-		case "total_cars":
-			p.TotalCars = i16(t, key, f.int(t, key))
-		case "car_code":
-			p.CarCode = i32(t, key, f.int(t, key))
-		case "throttle":
-			p.Throttle = u8(t, key, f.int(t, key))
-		case "brake":
-			p.Brake = u8(t, key, f.int(t, key))
-		case "current_gear":
-			current = u8(t, key, f.int(t, key))
-		case "suggested_gear":
-			suggested = u8(t, key, f.int(t, key))
-		case "speed_kph":
-			p.Speed = float32(f.float(t, key) / 3.6)
-		case "tire_temp":
-			p.TyreTemp = toWheels(t, key, f.wheels(t, key))
-		case "tire_radius":
-			p.TyreRadius = toWheels(t, key, f.wheels(t, key))
-		case "suspension_height":
-			p.SuspensionHeight = toWheels(t, key, f.wheels(t, key))
-		case "wheel_rps":
-			p.WheelSpeed = toWheels(t, key, f.wheels(t, key))
-		default:
-			if notPacket[key] {
-				continue
-			}
-			field, ok := v1Floats[key]
-			if !ok {
-				t.Fatalf("a v1 frame key the test doesn't know: %q", key)
-			}
-			*field(&p) = f32(t, key, f.float(t, key))
-		}
-	}
-	p.Gears = salsa.MakeGears(current, suggested)
-	// Seeds as varied as the frames; Encode writes the seed at 0x40.
-	p.Seed = uint32(p.PacketID) * 2654435761 //nolint:gosec // any seed will do
-	return p
+	return phase
 }
 
 // v1Floats are the float fields v1 records under their own names, as they are.
@@ -204,78 +164,103 @@ var v1Floats = map[string]func(p *salsa.Packet) *float32{
 	"body_height":    func(p *salsa.Packet) *float32 { return &p.BodyHeight },
 }
 
-// checkFrame compares a parsed packet with the frame it was built from, key by key,
-// the way v1 would have recorded the packet.
+// v1Ints are the integer fields v1 records, as they are.
+var v1Ints = map[string]func(p salsa.Packet) int64{
+	"packet_id":      func(p salsa.Packet) int64 { return int64(p.PacketID) },
+	"current_lap":    func(p salsa.Packet) int64 { return int64(p.CurrentLap) },
+	"total_laps":     func(p salsa.Packet) int64 { return int64(p.TotalLaps) },
+	"best_lap_ms":    func(p salsa.Packet) int64 { return int64(p.BestLapMs) },
+	"last_lap_ms":    func(p salsa.Packet) int64 { return int64(p.LastLapMs) },
+	"time_of_day_ms": func(p salsa.Packet) int64 { return int64(p.TimeOfDayMs) },
+	"race_start_pos": func(p salsa.Packet) int64 { return int64(p.RacePosition) },
+	"total_cars":     func(p salsa.Packet) int64 { return int64(p.TotalCars) },
+	"car_code":       func(p salsa.Packet) int64 { return int64(p.CarCode) },
+	"throttle":       func(p salsa.Packet) int64 { return int64(p.Throttle) },
+	"brake":          func(p salsa.Packet) int64 { return int64(p.Brake) },
+}
+
+// v1Wheels are the four-wheel fields v1 records, as they are.
+var v1Wheels = map[string]func(p salsa.Packet) salsa.Wheels{
+	"tire_temp":         func(p salsa.Packet) salsa.Wheels { return p.TyreTemp },
+	"tire_radius":       func(p salsa.Packet) salsa.Wheels { return p.TyreRadius },
+	"suspension_height": func(p salsa.Packet) salsa.Wheels { return p.SuspensionHeight },
+	"wheel_rps":         func(p salsa.Packet) salsa.Wheels { return p.WheelSpeed },
+}
+
+// The keys checkFrame reads other than those in the tables, and the ones that are
+// not packet fields: the track (v1 records it as null) and the format version.
+var v1Other = map[string]bool{
+	"t": true, "phase": true, "cars_on_track": true, "speed_kph": true,
+	"current_gear": true, "suggested_gear": true, "track_id": true, "v": true,
+}
+
+// checkFrame compares a packet with the frame v1 recorded, key by key, the way v1
+// would have recorded the packet. A float v1 recorded comes back as the nearest
+// float32, which is the value itself in every recording but the oldest, which
+// rounded some. A key it doesn't know fails the test, so nothing is skipped unseen.
 func checkFrame(t *testing.T, where string, f v1Frame, p salsa.Packet) {
 	t.Helper()
-	var phase string
-	_ = json.Unmarshal(f["phase"], &phase) // packetOf already read it
+	for key := range f {
+		if v1Floats[key] == nil && v1Ints[key] == nil && v1Wheels[key] == nil && !v1Other[key] {
+			t.Fatalf("%s: a v1 frame key the test doesn't know: %q", where, key)
+		}
+	}
+	phase := f.phase(t)
 	if p.Flags.Paused() != (phase == "paused") || p.Flags.Loading() != (phase == "loading") {
 		t.Errorf("%s: phase %s came back paused %v, loading %v", where, phase, p.Flags.Paused(), p.Flags.Loading())
 	}
 	if got, want := p.Flags.CarsOnTrack(), string(f["cars_on_track"]) == "true"; got != want {
 		t.Errorf("%s: cars_on_track %v, want %v", where, got, want)
 	}
+	if other := p.Flags &^ (salsa.FlagCarsOnTrack | salsa.FlagPaused | salsa.FlagLoading); other != 0 {
+		t.Errorf("%s: flags %#x set that v1 never kept", where, uint16(other))
+	}
 	kph := f.float(t, "speed_kph")
 	if got := p.SpeedKPH(); math.Abs(got-kph) > math.Max(kph, 1)*0x1p-22 {
 		t.Errorf("%s: speed %v km/h, want %v", where, got, kph)
 	}
-	s, ok := p.Gears.Suggested()
-	if int64(p.Gears.Current()) != f.int(t, "current_gear") || int64(s) != f.int(t, "suggested_gear") || ok != (s != salsa.NoGear) {
+	s, _ := p.Gears.Suggested()
+	if int64(p.Gears.Current()) != f.int(t, "current_gear") || int64(s) != f.int(t, "suggested_gear") {
 		t.Errorf("%s: gears %d and %d, want %s and %s", where, p.Gears.Current(), s, f["current_gear"], f["suggested_gear"])
 	}
-	for key, want := range map[string]int64{
-		"packet_id": int64(p.PacketID), "current_lap": int64(p.CurrentLap), "total_laps": int64(p.TotalLaps),
-		"best_lap_ms": int64(p.BestLapMs), "last_lap_ms": int64(p.LastLapMs), "time_of_day_ms": int64(p.TimeOfDayMs),
-		"race_start_pos": int64(p.RacePosition), "total_cars": int64(p.TotalCars), "car_code": int64(p.CarCode),
-		"throttle": int64(p.Throttle), "brake": int64(p.Brake),
-	} {
-		if got := f.int(t, key); got != want {
-			t.Errorf("%s: %s = %d, the frame has %d", where, key, want, got)
+	for key, field := range v1Ints {
+		if got, want := field(p), f.int(t, key); got != want {
+			t.Errorf("%s: %s = %d, the frame has %d", where, key, got, want)
 		}
 	}
-	for key, w := range map[string]salsa.Wheels{
-		"tire_temp": p.TyreTemp, "tire_radius": p.TyreRadius, "suspension_height": p.SuspensionHeight, "wheel_rps": p.WheelSpeed,
-	} {
-		if got := [4]float64{float64(w.FL), float64(w.FR), float64(w.RL), float64(w.RR)}; got != f.wheels(t, key) {
-			t.Errorf("%s: %s = %v, the frame has %v", where, key, got, f.wheels(t, key))
+	for key, field := range v1Wheels {
+		w, want := field(p), f.wheels(t, key)
+		if got := [4]float32{w.FL, w.FR, w.RL, w.RR}; got != [4]float32{float32(want[0]), float32(want[1]), float32(want[2]), float32(want[3])} {
+			t.Errorf("%s: %s = %v, the frame has %v", where, key, got, want)
 		}
 	}
 	for key, field := range v1Floats {
-		if _, ok := f[key]; !ok {
-			continue // older frames have no rot_* or ang_vel_*
-		}
-		if got := float64(*field(&p)); got != f.float(t, key) {
-			t.Errorf("%s: %s = %v, the frame has %v", where, key, got, f.float(t, key))
+		if got, want := *field(&p), f.float(t, key); got != float32(want) {
+			t.Errorf("%s: %s = %v, the frame has %v", where, key, got, want)
 		}
 	}
 }
 
-// AC2 (R7): for every frame of every v1 fixture, an A packet built from the frame,
-// encrypted, decrypted and parsed gives back every field the frame has.
+// #31's AC2 and #32's AC5: for every frame of every v1 fixture, the packet
+// OpenRecording reads holds what the frame does, and encrypted, decrypted and
+// parsed, it gives back every field the frame has.
 func TestRoundTripV1(t *testing.T) {
 	for _, path := range v1Fixtures(t) {
 		t.Run(filepath.Base(path), func(t *testing.T) {
-			file, err := os.Open(path) //nolint:gosec // a fixture under testdata
-			if err != nil {
-				t.Fatal(err)
+			frames := readV1Frames(t, path)
+			read := readRecording(t, path)
+			if len(read) != len(frames) {
+				t.Fatalf("OpenRecording read %d frames, the file has %d", len(read), len(frames))
 			}
-			defer func() { _ = file.Close() }()
-			zr, err := gzip.NewReader(file)
-			if err != nil {
-				t.Fatal(err)
-			}
-			lines := bufio.NewScanner(zr)
-			lines.Buffer(nil, 1<<20)
-			n := 0
-			for lines.Scan() {
-				n++
-				where := fmt.Sprintf("line %d", n)
-				var f v1Frame
-				if err := json.Unmarshal(lines.Bytes(), &f); err != nil {
-					t.Fatalf("%s: %v", where, err)
+			for i, r := range read {
+				where := fmt.Sprintf("line %d", i+1)
+				if r.T != frames[i].float(t, "t") {
+					t.Errorf("%s: T = %v, the frame has %s", where, r.T, frames[i]["t"])
 				}
-				built := packetOf(t, f)
+				checkFrame(t, where, frames[i], r.Packet)
+				built := r.Packet
+				// Seeds as varied as the frames; Encode writes the seed at 0x40.
+				built.Seed = uint32(built.PacketID) * 2654435761 //nolint:gosec // any seed will do
 				plain, err := salsa.Decrypt(salsatest.Encode(built))
 				if err != nil {
 					t.Fatalf("%s: Decrypt: %v", where, err)
@@ -287,7 +272,10 @@ func TestRoundTripV1(t *testing.T) {
 				if got.Kind() != salsa.KindA {
 					t.Errorf("%s: came back as a %s packet", where, got.Kind())
 				}
-				checkFrame(t, where, f, got)
+				if got.FromV1Recording() {
+					t.Errorf("%s: a parsed datagram says it came from a v1 recording", where)
+				}
+				checkFrame(t, where, frames[i], got)
 				if got.Seed != built.Seed {
 					t.Errorf("%s: seed %#x, built with %#x", where, got.Seed, built.Seed)
 				}
@@ -298,34 +286,66 @@ func TestRoundTripV1(t *testing.T) {
 					t.Errorf("%s: parsed %+v, built %+v", where, got.A, built.A)
 				}
 			}
-			if err := lines.Err(); err != nil {
-				t.Fatal(err)
-			}
-			if n == 0 {
-				t.Fatal("no frames")
-			}
 		})
 	}
 }
 
-// The fixtures are the files copied from v1 (testdata/v1/README.md), unchanged.
-func TestV1FixtureSums(t *testing.T) {
-	sums := map[string]string{}
-	for line := range strings.Lines(string(readFile(t, "testdata", "v1", "SHA256SUMS"))) {
-		sum, name, ok := strings.Cut(strings.TrimSpace(line), "  ")
-		if !ok {
-			t.Fatalf("SHA256SUMS line %q", line)
+// The datagram round trip is exact: a datagram decrypted, parsed and encoded again
+// is the same bytes, so ecu's replay (those-who-run/paddock#35) can stand a packet
+// in for its datagram (the review of salsa#8).
+func TestDatagramRoundTrip(t *testing.T) {
+	paths, err := filepath.Glob(filepath.Join("testdata", "golden", "*.datagram"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paths) != len(kinds) {
+		t.Fatalf("%d golden datagrams, want one for each of the %d kinds", len(paths), len(kinds))
+	}
+	for _, path := range paths {
+		d := readFile(t, path)
+		plain, err := salsa.Decrypt(d)
+		if err != nil {
+			t.Fatal(err)
 		}
-		sums[name] = sum
-	}
-	fixtures := v1Fixtures(t)
-	if len(sums) != len(fixtures) {
-		t.Errorf("SHA256SUMS lists %d files, testdata/v1 has %d fixtures", len(sums), len(fixtures))
-	}
-	for _, path := range fixtures {
-		got := sha256.Sum256(readFile(t, path))
-		if want := sums[filepath.Base(path)]; hex.EncodeToString(got[:]) != want {
-			t.Errorf("%s: sha256 %x, SHA256SUMS says %q", path, got, want)
+		p, err := salsa.Parse(plain)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := salsatest.Encode(p); !bytes.Equal(got, d) {
+			t.Errorf("%s: Encode(Parse(Decrypt(d))) differs from d", path)
 		}
 	}
+	// Datagrams of every kind with arbitrary contents and seeds, not only the golden
+	// pattern.
+	r := newRand(9)
+	for _, kind := range kinds {
+		for range 50 {
+			p, err := salsa.Parse(plainOf(r, kind))
+			if err != nil {
+				t.Fatal(err)
+			}
+			p.Seed = uint32(r.Uint64()) //nolint:gosec // any 32 bits will do
+			d := salsatest.Encode(p)
+			plain, err := salsa.Decrypt(d)
+			if err != nil {
+				t.Fatal(err)
+			}
+			back, err := salsa.Parse(plain)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := salsatest.Encode(back); !bytes.Equal(got, d) {
+				t.Fatalf("%s: Encode(Parse(Decrypt(d))) differs from d", kind)
+			}
+		}
+	}
+}
+
+func writeTemp(t *testing.T, name string, b []byte) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(path, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
