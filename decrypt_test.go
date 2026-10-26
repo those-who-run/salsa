@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/those-who-run/salsa/internal/keystream"
 )
 
 var kinds = []Kind{KindA, KindB, KindTilde}
@@ -231,8 +233,8 @@ func TestHeartbeat(t *testing.T) {
 	if HeartbeatPort != 33739 || TelemetryPort != 33740 {
 		t.Errorf("ports %d and %d, want 33739 and 33740", HeartbeatPort, TelemetryPort)
 	}
-	if string(key[:]) != "Simulator Interface Packet GT7 v" {
-		t.Errorf("key %q", key)
+	if string(keystream.Key[:]) != "Simulator Interface Packet GT7 v" {
+		t.Errorf("key %q", keystream.Key)
 	}
 }
 
