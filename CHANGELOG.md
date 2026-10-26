@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.2](https://github.com/those-who-run/salsa/compare/v0.1.1...v0.1.2) (2026-10-26)
+
+
+### Features
+
+* **salsa:** read v1 recordings as packets, behind one Source interface ([#11](https://github.com/those-who-run/salsa/issues/11)) ([d81d767](https://github.com/those-who-run/salsa/commit/d81d767927e663495f3323533acda48a34b5637b))
+
 ## [0.1.1](https://github.com/those-who-run/salsa/compare/v0.1.0...v0.1.1) (2026-10-26)
 
 
