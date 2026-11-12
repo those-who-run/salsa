@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.3](https://github.com/those-who-run/salsa/compare/v0.1.2...v0.1.3) (2026-11-12)
+
+
+### Dependencies
+
+* Go 1.27.4 ([#23](https://github.com/those-who-run/salsa/issues/23)) ([9518d3a](https://github.com/those-who-run/salsa/commit/9518d3aa7fefac40d61ce436e71ddb5f17ee4d51))
+
 ## [0.1.2](https://github.com/those-who-run/salsa/compare/v0.1.1...v0.1.2) (2026-10-26)
 
 
